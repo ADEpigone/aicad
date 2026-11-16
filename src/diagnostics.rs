@@ -32,6 +32,15 @@
 //!   and `score`.
 //! - `mdd_compilation` (`learning::consformer::decomposed_mdd_loss`): `num_problems` (training and
 //!   validation together) and `elapsed_s`.
+//! - `loss_non_finite` (`learning::consformer::decomposed_mdd_loss`): written when the MDD loss of
+//!   a batch is not finite, just before training stops on it (the epoch is the one after the last
+//!   `train_epoch` line). `stage` says where the first non-finite value appeared
+//!   (`probabilities`, `sample_loss`, `gradient` or `injection`), with `final_loss`, `cpu_loss`,
+//!   `bp_rounds`, `batch_size`, the counts and first locations of the non-finite probabilities
+//!   (`probs_non_finite`, `probs_first`) and gradient entries (`grad_non_finite`, `grad_first`),
+//!   `samples_non_finite_loss`, `grad_max_abs`, and for the first bad sample (`constraints_sample`)
+//!   the `constraints` whose computation went non-finite; with `injection`, `residual_max_abs`.
+//!   Numbers that may be non-finite are written as strings.
 //!
 //! Nothing is recorded unless the caller opens a sink: training, solving and compiling never
 //! start one themselves. A script that wants the timings of a training run calls

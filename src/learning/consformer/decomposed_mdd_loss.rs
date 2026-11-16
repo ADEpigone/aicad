@@ -8,6 +8,8 @@
 //!
 //! # Without belief propagation
 //!
+//! ## The count
+//!
 //! Let $X_c$ be the scope of $c$ and $q_x$ the probabilities of the network for the variable $x$
 //! (one weight $q_x(v)$ per value $v$; a value outside the real domain of $x$ has weight $0$). The
 //! weighted model count of $c$ under per-variable weights $w$ is
@@ -17,7 +19,42 @@
 //! the sum of the weights of the paths of the MDD of $c$, where the edge of the layer of $x$ with
 //! value $v$ has weight $w_x(v)$ (see [`crate::mdd::wmc`]). With $\varepsilon = 10^{-6}$, the loss
 //! of $c$ is $L_c = -\ln(\mathrm{WMC}\_c(q) + \varepsilon)$: the labels of the MDD are the
-//! probabilities of the network themselves.
+//! probabilities of the network themselves. The $\varepsilon$ keeps the loss finite when no path
+//! has a positive weight, for example when the values pinned by the destroy step already violate
+//! $c$.
+//!
+//! ## The gradient
+//!
+//! Write $W$ for $\mathrm{WMC}\_c$ and fix a variable $x$ of $X_c$. Every path of the MDD crosses
+//! the layer of $x$ exactly once, on one edge $e$. Let $\alpha(n)$ be the total weight of the paths
+//! from the root to the node $n$, $\beta(n)$ the total weight of the paths from $n$ to the sink, and
+//! $v_e$ the value of the edge $e$. The paths through $e$ weigh
+//! $\alpha(\mathrm{from}(e)) \ w_x(v_e) \ \beta(\mathrm{to}(e))$ together, so grouping the paths by
+//! the edge where they cross the layer of $x$, then the edges by their value,
+//!
+//! $$W = \sum_{e} \alpha(\mathrm{from}(e)) \ w_x(v_e) \ \beta(\mathrm{to}(e)) = \sum_v w_x(v) \ R_x(v), \qquad R_x(v) = \sum_{e \ :\ v_e = v} \alpha(\mathrm{from}(e)) \ \beta(\mathrm{to}(e)),$$
+//!
+//! where the sums over $e$ are over the edges of the layer of $x$. $\alpha$ and $\beta$ only
+//! involve the labels of the *other* layers, so $R_x$ does not depend on $w_x$, and the count is
+//! linear in the labels of $x$:
+//!
+//! $$\frac{\partial W}{\partial w_x(v)} = R_x(v).$$
+//!
+//! The loss is $L_c = -\ln(W + \varepsilon)$, so $\partial L_c / \partial W = -1 / (W + \varepsilon)$.
+//! The labels are the probabilities, $w_x = q_x$, and by the chain rule
+//!
+//! $$\frac{\partial L_c}{\partial q_x(v)} = \frac{\partial L_c}{\partial W} \ \frac{\partial W}{\partial w_x(v)} = -\frac{R_x(v)}{W + \varepsilon}.$$
+//!
+//! Two facts about $R_x$ are used below.
+//!
+//! - $w_x(v) \ R_x(v)$ is the weight of the paths that give $v$ to $x$, and so
+//!   $w_x(v) \ R_x(v) / W$ is the probability that $x = v$ given that $c$ holds, if each variable
+//!   is drawn from its labels.
+//! - Summing over the values gives back the count: $\sum_v w_x(v) \ R_x(v) = W$.
+//!
+//! The loss of a sample is the mean over its $m$ constraints, so the gradient for $q_x$ is $1/m$
+//! times the sum of these over the constraints that contain $x$; the others do not depend on
+//! $q_x$. A value outside the domain of $x$ has a constant label $0$, and no gradient.
 //!
 //! # With belief propagation (`bp_rounds` $= k > 0$)
 //!
@@ -40,23 +77,21 @@
 //! It is the marginal of $x$ with the prior $q_x$ and the message $\mu_{c \to x}$ of $c$ itself
 //! divided out: $f_{c,x} \propto m_x / (q_x \  \mu_{c \to x})$. A variable that is in no other
 //! constraint, or no round, gives a uniform factor. Only the shape of $f$ matters, since it is
-//! renormalised below. To keep every label in the range of ordinary floating point numbers, a
-//! factor is floored at $10^{-12}$ times its largest entry ([`FACTOR_FLOOR`]).
+//! renormalised below. The factors are floored to keep the labels in the range of floating point
+//! numbers (see the numerical considerations).
 //!
 //! ## 2. The labels
 //!
-//! The label of $x$ in the MDD of $c$ is the cavity message of $x$ to $c$, which is the prior
-//! multiplied by the factor and normalised, $\mu_{x \to c} \propto q_x \odot f_{c,x}$, where
-//! $\odot$ is the product value by value, $(q \odot f)(v) = q(v) f(v)$. It is written as a
-//! function of $q$ because the gradient is taken with respect to $q$. Let
-//! $s_x = \sum_v q_x(v)$ be the mass of the prior: it is $1$ unless some values were masked out of
-//! the domain, and keeping it means that probability put outside the domain is still penalised,
-//! as it is without belief propagation. With $Z_{c,x} = \sum_v q_x(v) f_{c,x}(v)$,
+//! The label of $x$ in the MDD of $c$ is the cavity message of $x$ to $c$: the prior combined
+//! with what the other constraints say,
 //!
-//! $$w_{c,x}(v) = s_x \  \frac{q_x(v) f_{c,x}(v)}{Z_{c,x}}.$$
+//! $$\mu_{x \to c}(v) = \frac{q_x(v)\  f_{c,x}(v)}{Z_{c,x}}, \qquad Z_{c,x} = \sum_u q_x(u)\  f_{c,x}(u).$$
 //!
-//! With $f$ uniform, $w_{c,x} = q_x$: a variable that no other constraint speaks about keeps its
-//! probabilities.
+//! Let $s_x = \sum_v q_x(v)$ be the mass of the prior: it is $1$ unless some values were masked
+//! out of the domain, and keeping it means that probability put outside the domain is still
+//! penalised, as it is without belief propagation. The labels are $w_{c,x} = s_x\  \mu_{x \to c}$.
+//! With $f$ uniform, $\mu_{x \to c} = q_x / s_x$ and $w_{c,x} = q_x$: a variable that no other
+//! constraint speaks about keeps its probabilities.
 //!
 //! ## 3. The count
 //!
@@ -67,48 +102,154 @@
 //!
 //! ## 4. The gradient
 //!
-//! The forward-backward pass of [`crate::mdd::wmc`] on the MDD of $c$, with the labels $w_c$,
-//! returns $\ln \mathrm{WMC}\_c$ and $g_{x}(v) = \partial \ln \mathrm{WMC}\_c / \partial w_{c,x}(v)$.
-//! With $\rho = \mathrm{WMC}\_c / (\mathrm{WMC}\_c + \varepsilon)$, the gradient of $L_c$ with respect
-//! to the *labels* is $G_x(v) = -\rho\  g_x(v)$. This is the only gradient that the passes over
-//! the diagram give, and it is the one that is used when there is no belief propagation. The
-//! network outputs $q$, not $w$, so $G$ goes back through step 2, for each variable $x$ of $X_c$
-//! separately, **holding $f_{c,x}$ constant**. Differentiating $w_{c,x}(v) = s_x\  q_x(v) f(v) /
-//! Z$ gives
+//! The loss of $c$ depends on $q_x$ only through the labels $w_{c,x}$ of step 2, and the cavity
+//! factor $f_{c,x}$ is **held constant** (see the design notes). In this section $x$ and $c$ are
+//! fixed, and the indices are dropped: $q$, $f$, $Z$, $s$, $w$ and $R$ stand for $q_x$, $f_{c,x}$,
+//! $Z_{c,x}$, $s_x$, $w_{c,x}$ and $R_x$, and $\mu$ for the message $\mu_{x \to c}$. $W$ and $R$
+//! are those of the MDD of $c$ labelled by $w_c$, as in the gradient without belief propagation.
 //!
-//! $$\frac{\partial w_{c,x}(v)}{\partial q_x(u)} = \frac{w_{c,x}(v)}{s_x} + \frac{s_x f(u)}{Z}\Bigl(\delta_{vu} - \frac{w_{c,x}(v)}{s_x}\Bigr),$$
+//! ### 4a. The chain rule
 //!
-//! where the first term is the effect of $q_x(u)$ on the mass $s_x$ (all the labels scale together)
-//! and the second one its effect through the product with $f$, followed by the normalisation.
-//! Summing over $v$ with the weights $G_x(v)$, with $f = f_{c,x}$ and $Z = Z_{c,x}$,
+//! Moving $q(u)$ moves the labels $w(v)$, which move the count $W$, which moves the loss:
 //!
-//! $$\frac{\partial L_c}{\partial q_x(u)} = T + \frac{s_x f(u)}{Z}\bigl(G_x(u) - T\bigr),
-//! \qquad T = \frac{1}{s_x} \sum_v w_{c,x}(v)\  G_x(v).$$
+//! $$\frac{\partial L_c}{\partial q(u)} = \sum_v \frac{\partial L_c}{\partial W} \ \frac{\partial W}{\partial w(v)} \ \frac{\partial w(v)}{\partial q(u)} = -\frac{1}{W + \varepsilon} \sum_v R(v) \ \frac{\partial w(v)}{\partial q(u)}.$$
 //!
-//! This is `tilt_backward`. The contributions of all the constraints that contain $x$ are added.
-//! When $f$ is uniform, $Z = s_x$ and $w = q$, and the formula gives back $G_x(u)$: there is no
-//! change for a single constraint, or without a round.
+//! The first two factors are those without belief propagation, $-1 / (W + \varepsilon)$ and
+//! $R(v)$. The third is new.
+//!
+//! ### 4b. The derivative of the labels
+//!
+//! The labels are $w(v) = s \ q(v) \ f(v) / Z$ with $s = \sum_v q(v)$ and
+//! $Z = \sum_v q(v) \ f(v)$. Moving $q(u)$ moves three things: the mass, with
+//! $\partial s / \partial q(u) = 1$; the numerator $q(v) \ f(v)$, only when $v = u$; and the
+//! normaliser, with $\partial Z / \partial q(u) = f(u)$. With $\delta_{vu}$ equal to $1$ if
+//! $v = u$ and $0$ otherwise, the product and quotient rules give one term for each:
+//!
+//! $$\frac{\partial w(v)}{\partial q(u)} = \frac{q(v) \ f(v)}{Z} + \frac{s \ f(v) \ \delta_{vu}}{Z} - \frac{s \ q(v) \ f(v) \ f(u)}{Z^2}.$$
+//!
+//! The first fraction is $\mu(v)$. In the two others, $f(u) / Z = \mu(u) / q(u)$ (where
+//! $q(u) > 0$), and $f(v) \ \delta_{vu} = f(u) \ \delta_{vu}$, so
+//!
+//! $$\frac{\partial w(v)}{\partial q(u)} = \mu(v) + s \ \frac{\mu(u)}{q(u)} \ \bigl(\delta_{vu} - \mu(v)\bigr).$$
+//!
+//! The first term is the effect of the mass: all the labels scale with $s$. The second is the
+//! effect of the tilt: raising $q(u)$ raises the label of $u$ and, through the normalisation,
+//! lowers every label in proportion to $\mu$.
+//!
+//! ### 4c. The product
+//!
+//! Putting 4b in 4a,
+//!
+//! $$\frac{\partial L_c}{\partial q(u)} = -\frac{1}{W + \varepsilon} \sum_v R(v) \Bigl(\mu(v) + s \ \frac{\mu(u)}{q(u)} \ \bigl(\delta_{vu} - \mu(v)\bigr)\Bigr).$$
+//!
+//! The $\delta_{vu}$ keeps only $v = u$ from its sum, so with $M = \sum_v R(v) \ \mu(v)$,
+//!
+//! $$\frac{\partial L_c}{\partial q(u)} = -\frac{1}{W + \varepsilon} \Bigl(M + s \ \frac{\mu(u)}{q(u)} \ \bigl(R(u) - M\bigr)\Bigr).$$
+//!
+//! Since $w = s \ \mu$, the second fact about $R$ gives $M = \frac{1}{s} \sum_v w(v) \ R(v) = W / s$.
+//! And $s \ \mu(u) \ R(u) = w(u) \ R(u)$. So
+//!
+//! $$\frac{\partial L_c}{\partial q(u)} = -\frac{1}{W + \varepsilon} \Bigl(\frac{W}{s} + \frac{w(u) \ R(u) - \mu(u) \ W}{q(u)}\Bigr).$$
+//!
+//! ### 4d. Reading it with the messages
+//!
+//! Factor $W$ out of the parenthesis, and let
+//!
+//! $$\rho = \frac{W}{W + \varepsilon}, \qquad b_c(u) = \frac{w(u) \ R(u)}{W}.$$
+//!
+//! $\rho$ is close to $1$ unless $c$ is nearly impossible under the labels ($W \lesssim \varepsilon$),
+//! and by the first fact about $R$, $b_c(u)$ is the probability that $x = u$ given that $c$
+//! holds. This gives
+//!
+//! $$\frac{\partial L_c}{\partial q_x(u)} = -\rho \Bigl[\frac{1}{s_x} + \frac{b_c(u) - \mu_{x \to c}(u)}{q_x(u)}\Bigr].$$
+//!
+//! The quantities in it are those of belief propagation. $R(v)$ is the support that $c$ gives to
+//! the value $v$, so the message of $c$ to $x$ is $R$ up to a constant, $\mu_{c \to x} \propto R$
+//! ([`crate::bp`] normalises it to sum to one). And $w \propto \mu_{x \to c}$. So
+//! $b_c \propto \mu_{x \to c} \ \mu_{c \to x}$, and since $b_c$ sums to one,
+//!
+//! $$b_c(u) = \frac{\mu_{x \to c}(u) \ \mu_{c \to x}(u)}{\sum_v \mu_{x \to c}(v) \ \mu_{c \to x}(v)}:$$
+//!
+//! the *belief* of $x$ once $c$ is added to what the other constraints say, the product of the
+//! incoming messages normalised, as for a marginal in belief propagation.
+//!
+//! ### 4e. Check: a uniform factor
+//!
+//! When $f$ is uniform (a single constraint, or no round), $\mu = q / s$ and $w = q$. The formula
+//! of 4c becomes $-\bigl(W/s + R(u) - W/s\bigr) / (W + \varepsilon) = -R(u) / (W + \varepsilon)$:
+//! the gradient without belief propagation.
+//!
+//! ### 4f. With respect to the logits
+//!
+//! The network produces logits $z$, and $q = \mathrm{softmax}(z)$ for a variable that it
+//! re-predicts, so $s = 1$. (The logits here are those after the Gumbel noise; if they are divided
+//! by a temperature $\tau$ first, the gradient with respect to the raw output gets a factor
+//! $1 / \tau$.) The Jacobian of the softmax is $\partial q(v) / \partial z(u) = q(v) \ (\delta_{vu} - q(u))$,
+//! so the gradient of any function $L$ is
+//!
+//! $$\frac{\partial L}{\partial z(u)} = \sum_v \frac{\partial L}{\partial q(v)} \ q(v) \ \bigl(\delta_{vu} - q(u)\bigr) = q(u) \ \frac{\partial L}{\partial q(u)} - q(u) \sum_v q(v) \ \frac{\partial L}{\partial q(v)}.$$
+//!
+//! With the formula of 4d and $s = 1$:
+//!
+//! - $q(u) \ \partial L_c / \partial q(u) = -\rho \ \bigl(q(u) + b_c(u) - \mu_{x \to c}(u)\bigr)$;
+//! - summing this over $u$, and since $q$, $b_c$ and $\mu_{x \to c}$ each sum to one,
+//!   $\sum_v q(v) \ \partial L_c / \partial q(v) = -\rho \ (1 + 1 - 1) = -\rho$.
+//!
+//! The difference of the two is
+//!
+//! $$\frac{\partial L_c}{\partial z(u)} = -\rho \ \bigl(q(u) + b_c(u) - \mu_{x \to c}(u)\bigr) + \rho \ q(u) = \rho \ \bigl(\mu_{x \to c}(u) - b_c(u)\bigr).$$
+//!
+//! The $1/s$ term, the same for every value, contributed the $\rho \ q(u)$ that cancels: the
+//! softmax does not see it. Another way to get this result: for $s = 1$ the tilt is a shift of
+//! the logits, $\mu_{x \to c} = \mathrm{softmax}(z + \ln f)$, and $\rho \ (\mu - b)$ is the usual
+//! gradient of the semantic loss at the logits $z + \ln f$.
 //!
 //! ### What the gradient says
 //!
-//! The count is linear in the labels of each layer, since every path crosses the layer once. So
-//! $w_{c,x}(v)\  g_x(v) = \Pr(x = v \mid c \text{ holds})$ under the labels, and these sum to one:
+//! - It compares two distributions over the values of $x$: what the rest of the problem believes
+//!   ($\mu_{x \to c}$), and what the belief becomes once $c$ is imposed on it ($b_c$). Gradient
+//!   descent raises the logit of the values that $c$ makes more likely than the others believed.
+//! - Without belief propagation $\mu_{x \to c} = q_x$: this is the usual gradient of the semantic
+//!   loss, the difference between the network's distribution and its distribution conditioned on
+//!   $c$.
+//! - When $c$ has nothing to say about $x$, its message $\mu_{c \to x}$ is flat, $b_c = \mu_{x \to
+//!   c}$ and the signal is zero. A value that the other constraints rule out has
+//!   $\mu_{x \to c} \approx 0$ and hardly moves.
+//! - $\rho$ switches the signal off when $c$ is hopeless ($W \ll \varepsilon$): the loss is flat
+//!   at $-\ln \varepsilon$ there.
 //!
-//! $$g_x(v) = \frac{\Pr(x = v \mid c)}{w_{c,x}(v)}, \qquad \sum_v w_{c,x}(v)\  g_x(v) = 1.$$
+//! # Numerical considerations
 //!
-//! So $g_x(v) > 1$ when satisfying $c$ makes $v$ more likely than the labels say, and $T =
-//! -\rho / s_x$ is a constant. Therefore $G_x(u) - T = -\rho\ (g_x(u) - 1/s_x)$, and for
-//! $s_x = 1$
+//! The formulas above say what is computed, not how. The implementation differs in the following
+//! points, none of which changes the result beyond rounding.
 //!
-//! $$\frac{\partial L_c}{\partial q_x(u)} = -\rho \Bigl[\  1 + \frac{f(u)}{Z}\bigl(g_x(u) - 1\bigr) \Bigr].$$
+//! - **Scaled counts.** On a large MDD, $\alpha$, $\beta$, $W$ and $R$ can be far below the
+//!   smallest `f64`. The forward-backward pass of [`crate::mdd::wmc`] rescales them layer by layer
+//!   and returns $\ln W$ and the ratios $g(v) = R(v) / W = \partial \ln W / \partial w(v)$, which
+//!   stay in range. The derivative of the loss with respect to a label is therefore computed as
+//!   $-R(v) / (W + \varepsilon) = -\rho \ g(v)$, with
+//!   $\rho = \exp(\ln W - \ln(W + \varepsilon))$ and $\ln(W + \varepsilon)$ obtained from $\ln W$
+//!   by `log_add_exp`. Without belief propagation, $-\rho \ g$ is the gradient (see
+//!   `mdd_loss_and_gradient`).
+//! - **Messages from ratios.** $R$ is only known through $g$, a constant multiple of it. This is
+//!   enough: $\mu_{c \to x} = g / \sum_v g(v)$, and in $b_c$ every constant cancels.
+//!   `prior_gradient` computes the formula of 4d from $q$, $\mu_{x \to c}$, $\mu_{c \to x}$ and
+//!   $-\rho$.
+//! - **Zero probabilities.** $(b_c(u) - \mu_{x \to c}(u)) / q(u)$ is computed as
+//!   $\mu_{x \to c}(u) / q(u)$ times $\mu_{c \to x}(u) / \sum_v \mu_{x \to c}(v) \ \mu_{c \to x}(v) - 1$,
+//!   with $\mu_{x \to c}(u) / q(u) = f(u) / Z$. This stays defined where $q(u) = 0$, which happens
+//!   once a confident softmax is rounded to `f32`.
+//! - **Floored factors.** A value that the other constraints rule out has a cavity factor of
+//!   exactly zero, or a denormal one. A layer can then lose all its weight and $\ln W$ and its
+//!   gradient overflow. Each factor is floored at $10^{-12}$ times its largest entry
+//!   ([`FACTOR_FLOOR`]), which keeps the labels in the range of ordinary floating point numbers.
+//! - **Degenerate layers.** When no value survives the tilt ($Z = 0$), the labels of the layer are
+//!   the prior. When no path of positive weight crosses the layer, the gradient of the layer is
+//!   zero, as $\rho = 0$ would give.
 //!
-//! - The $1$ is the same for all values, and the softmax of the network removes it.
-//! - $g_x(u) - 1$ is the *advantage* of the value $u$: the probability of $u$ given that $c$ holds,
-//!   relative to its label. The network is pushed to raise $q_x(u)$ when it is positive, as a
-//!   policy gradient with a baseline.
-//! - $f(u) / Z$ is how much the label of $u$ moves when $q_x(u)$ moves. A value that the other
-//!   constraints rule out ($f(u) \approx 0$) hardly gets any signal from $c$, and the signal
-//!   grows when the network puts its mass where the others disagree (small $Z$).
+//! The tests check `prior_gradient` against the derivative of the labels computed directly (4a and
+//! 4b without the messages): they agree to about $10^{-15}$ relative for ordinary probabilities,
+//! and to about $10^{-5}$ for near one-hot ones, where the floor of the factors dominates.
 //!
 //! # Design notes
 //!
@@ -126,7 +267,7 @@
 //!   (a low temperature of the network) this happens often, and the factors carry little.
 //! - **Cost.** A round is a forward-backward pass over each MDD, as the count itself is: a step
 //!   costs about $k + 1$ times the passes of the loss without belief propagation, plus a few
-//!   operations per layer for the tilt.
+//!   operations per layer for the messages.
 //!
 //! # Example
 //!
@@ -135,11 +276,13 @@
 //! counts are $0.5$. With it, $y$ hears from $y \neq z$ the reverse of $q_z$, and from $x \neq y$
 //! the reverse of $q_x$:
 //!
-//! - In $x \neq y$, $f_y = (0.8, 0.2)$ and $Z = 0.5$, so the labels of $y$ are $(0.8, 0.2)$ and
-//!   $\mathrm{WMC} = 0.9 \cdot 0.2 + 0.1 \cdot 0.8 = 0.26$. Given that the constraint holds,
-//!   $y = 1$ has probability $0.69$ against a label of $0.2$, so $g_y = (0.385, 3.46)$. With
-//!   $\rho \approx 1$, $T = -1$ and $f / Z = (1.6, 0.4)$, the gradient is
-//!   $\partial L / \partial q_y = (-1, -1) + (1.6, 0.4) \odot (0.615, -2.46) \approx (-0.02, -1.98)$:
+//! - In $x \neq y$, $f_y = (0.8, 0.2)$ and $Z = 0.5$, so the message of $y$ to the constraint is
+//!   $\mu_{y \to c} = (0.8, 0.2)$ and $\mathrm{WMC} = 0.9 \cdot 0.2 + 0.1 \cdot 0.8 = 0.26$. The
+//!   message of the constraint to $y$ is $\mu_{c \to y} = (0.1, 0.9)$ ($y = 0$ needs $x = 1$,
+//!   which has probability $0.1$). Their overlap is $0.26$, so the belief of $y$ given that the
+//!   constraint holds is $b = (0.308, 0.692)$. With $\rho \approx 1$ the gradient with respect to
+//!   the logits is $\mu_{y \to c} - b = (0.49, -0.49)$ and with respect to the probabilities
+//!   $\partial L / \partial q_y = -\bigl[(1, 1) + (b - \mu_{y \to c}) / q_y\bigr] \approx (-0.02, -1.98)$:
 //!   the network is pushed towards $y = 1$, which is what $x \neq y$ needs when $x$ is likely $0$
 //!   and $z$ already pulls $y$ towards $0$.
 //! - In $y \neq z$, $f_y = (0.1, 0.9)$ and $\mathrm{WMC} = 0.26$ as well. $x$ and $z$ are in one
@@ -291,39 +434,68 @@ fn floored(factor: &[f64]) -> Vec<f64> {
         .collect()
 }
 
-/// The labels of a layer: the prior `weights` tilted by the cavity `factor`, renormalised to keep
-/// the mass of the prior, so that a layer of `weights` that sum to one still does. A tilt that
-/// kills every value leaves the prior as it is.
-fn tilt(weights: &[f64], factor: &[f64]) -> Vec<f64> {
+/// The cavity message of a variable to a constraint, $\mu_{x \to c} \propto q_x \odot f_{c,x}$,
+/// together with the ratio $\mu_{x \to c} / q_x$ (which is $f_{c,x}$ over the normaliser, and so
+/// is defined even where $q_x$ is zero). `None` when nothing survives the product.
+fn cavity_message(prior: &[f64], factor: &[f64]) -> Option<(Vec<f64>, Vec<f64>)> {
     let factor = floored(factor);
-    let mass: f64 = weights.iter().sum();
-    let tilted: Vec<f64> = weights.iter().zip(&factor).map(|(w, f)| w * f).collect();
-    let total: f64 = tilted.iter().sum();
+    let total: f64 = prior.iter().zip(&factor).map(|(q, f)| q * f).sum();
     if !(total > 0.0 && total.is_finite()) {
-        return weights.to_vec();
+        return None;
     }
-    tilted.iter().map(|t| mass * t / total).collect()
+    let message = prior
+        .iter()
+        .zip(&factor)
+        .map(|(q, f)| q * f / total)
+        .collect();
+    let ratio = factor.iter().map(|f| f / total).collect();
+    Some((message, ratio))
 }
 
-/// The derivative of a loss with respect to the prior `weights` of a layer, given its derivative
-/// `grad` with respect to the labels `tilt(weights, factor)`. The factor is a constant (and is
-/// floored as in `tilt`).
-///
-/// With $a = q \odot f$, $A = \sum a$ and $S = \sum q$, the labels are $w = S a / A$, so
-/// $\partial L / \partial q_u = T + S f_u (g_u - T) / A$ with
-/// $T = \sum_v g_v a_v / A$.
-fn tilt_backward(weights: &[f64], factor: &[f64], grad: &[f64]) -> Vec<f64> {
-    let factor = floored(factor);
-    let mass: f64 = weights.iter().sum();
-    let tilted: Vec<f64> = weights.iter().zip(&factor).map(|(w, f)| w * f).collect();
-    let total: f64 = tilted.iter().sum();
-    if !(total > 0.0 && total.is_finite()) {
-        return grad.to_vec();
+/// The labels of a layer: the cavity message $\mu_{x \to c}$, scaled to the mass of the prior so
+/// that a prior that sums to one gives labels that do. When no value survives the factor, the
+/// labels are the prior itself.
+fn cavity_labels(prior: &[f64], factor: &[f64]) -> Vec<f64> {
+    match cavity_message(prior, factor) {
+        Some((message, _)) => {
+            let mass: f64 = prior.iter().sum();
+            message.iter().map(|m| mass * m).collect()
+        }
+        None => prior.to_vec(),
     }
-    let mean: f64 = grad.iter().zip(&tilted).map(|(g, a)| g * a).sum::<f64>() / total;
-    grad.iter()
-        .zip(&factor)
-        .map(|(g, f)| mean + mass * f * (g - mean) / total)
+}
+
+/// The derivative of `chain` times the log count with respect to the prior $q_x$ of a layer, where
+/// `count_gradient` is $\partial \ln \mathrm{WMC} / \partial w_{c,x}$ at the labels of
+/// [`cavity_labels`] and `chain` is $-\rho$. In terms of the messages,
+///
+/// $$\frac{\partial L_c}{\partial q_x(u)} = -\rho \Bigl[ \frac{1}{s_x} +
+/// \frac{\mu_{x \to c}(u)}{q_x(u)} \Bigl( \frac{\mu_{c \to x}(u)}{\langle \mu_{x \to c},
+/// \mu_{c \to x} \rangle} - 1 \Bigr) \Bigr],$$
+///
+/// where $\mu_{c \to x}$ is the count gradient normalised to sum to one. The cavity factor is
+/// held constant, and the layer is treated as the prior itself when no value survives it. Zero
+/// when the constraint has no path through the layer.
+fn prior_gradient(prior: &[f64], factor: &[f64], count_gradient: &[f64], chain: f64) -> Vec<f64> {
+    let mass: f64 = prior.iter().sum();
+    let (message, ratio) = match cavity_message(prior, factor) {
+        Some(found) => found,
+        None if mass > 0.0 && mass.is_finite() => (
+            prior.iter().map(|q| q / mass).collect(),
+            vec![1.0 / mass; prior.len()],
+        ),
+        None => return vec![0.0; prior.len()],
+    };
+    let norm: f64 = count_gradient.iter().sum();
+    let to_variable: Vec<f64> = count_gradient.iter().map(|g| g / norm).collect();
+    let overlap: f64 = message.iter().zip(&to_variable).map(|(m, c)| m * c).sum();
+    if !(norm > 0.0 && norm.is_finite() && overlap > 0.0 && overlap.is_finite()) {
+        return vec![0.0; prior.len()];
+    }
+    ratio
+        .iter()
+        .zip(&to_variable)
+        .map(|(r, c)| chain * (1.0 / mass + r * (c / overlap - 1.0)))
         .collect()
 }
 
@@ -334,7 +506,8 @@ fn tilt_backward(weights: &[f64], factor: &[f64], grad: &[f64]) -> Vec<f64> {
 /// indexed by each variable's *raw domain value*, not by `ValueIndex` position.
 /// `grad` accumulates `∂(-log(wmc+eps))/∂probs_for_sample` into that same indexing.
 /// With `factors` (one cavity factor per layer, see [`cavity_factors`]) the diagram is labelled
-/// with the probabilities tilted by them, and the gradient goes back through the tilt.
+/// with the cavity messages of the variables (scaled to the mass of their priors), and the gradient
+/// goes back to the probabilities through them.
 fn mdd_loss_and_gradient(
     constraint: &CompiledConstraint,
     real_problem: &Problem,
@@ -345,7 +518,11 @@ fn mdd_loss_and_gradient(
 ) -> f64 {
     let prior = layer_weights_from_probs(constraint, real_problem, probs_for_sample, domain_size);
     let weights: Vec<Vec<f64>> = match factors {
-        Some(factors) => prior.iter().zip(factors).map(|(w, f)| tilt(w, f)).collect(),
+        Some(factors) => prior
+            .iter()
+            .zip(factors)
+            .map(|(w, f)| cavity_labels(w, f))
+            .collect(),
         None => prior.clone(),
     };
     let (log_wmc, gradient) = log_wmc_and_gradient(constraint, &weights);
@@ -357,10 +534,7 @@ fn mdd_loss_and_gradient(
     for (layer, layer_gradient) in gradient.iter().enumerate() {
         let variable = constraint.decision_at_layer(layer);
         let layer_gradient: Vec<f64> = match factors {
-            Some(factors) => {
-                let scaled: Vec<f64> = layer_gradient.iter().map(|g| chain * g).collect();
-                tilt_backward(&prior[layer], &factors[layer], &scaled)
-            }
+            Some(factors) => prior_gradient(&prior[layer], &factors[layer], layer_gradient, chain),
             None => layer_gradient.iter().map(|g| chain * g).collect(),
         };
         for (raw_value, &g) in layer_gradient.iter().enumerate() {
@@ -1464,6 +1638,93 @@ mod loss_tests {
                 grad[i],
             );
         }
+    }
+
+    /// The gradient through the tilt as it was first written, in terms of the labels: with
+    /// $a = q \odot f$, $A = \sum a$ and $S = \sum q$ the labels are $S a / A$ and
+    /// $\partial L / \partial q_u = T + S f_u (g_u - T) / A$, $T = \sum_v g_v a_v / A$.
+    /// Kept as the reference that `prior_gradient` must reproduce.
+    fn tilt_backward_reference(weights: &[f64], factor: &[f64], grad: &[f64]) -> Vec<f64> {
+        let factor = floored(factor);
+        let mass: f64 = weights.iter().sum();
+        let tilted: Vec<f64> = weights.iter().zip(&factor).map(|(w, f)| w * f).collect();
+        let total: f64 = tilted.iter().sum();
+        if !(total > 0.0 && total.is_finite()) {
+            return grad.to_vec();
+        }
+        let mean: f64 = grad.iter().zip(&tilted).map(|(g, a)| g * a).sum::<f64>() / total;
+        grad.iter()
+            .zip(&factor)
+            .map(|(g, f)| mean + mass * f * (g - mean) / total)
+            .collect()
+    }
+
+    /// Writing the gradient with the messages of belief propagation changes nothing: it equals the
+    /// first formulation on the gradients of real diagrams, for ordinary and extreme
+    /// probabilities and for priors that do not sum to one.
+    #[test]
+    fn the_gradient_in_belief_propagation_terms_equals_the_tilt_formula() {
+        use rand::rngs::StdRng;
+        use rand::{RngExt, SeedableRng};
+
+        let (problem, loss_fn) = two_constraint_problem();
+        let mdds = loss_fn.compiled_for(&problem);
+        let mut rng = StdRng::seed_from_u64(11);
+        let mut compared = 0;
+        for trial in 0..300 {
+            let spread = if trial % 2 == 0 { 2.0 } else { 20.0 };
+            // With near one-hot probabilities the cavity factors are floored at 1e-12 and the
+            // two formulations, which cancel large terms differently, agree to fewer digits.
+            let tolerance = if trial % 2 == 0 { 1e-9 } else { 1e-3 };
+            let mut probs = Vec::new();
+            for _ in 0..3 {
+                let logits: Vec<f64> = (0..3).map(|_| rng.random_range(-spread..spread)).collect();
+                let largest = logits.iter().copied().fold(f64::MIN, f64::max);
+                let weights: Vec<f64> = logits.iter().map(|l| (l - largest).exp()).collect();
+                let total: f64 = weights.iter().sum();
+                probs.extend(weights.iter().map(|w| (w / total) as f32));
+            }
+            let free = Evidence::free(3);
+            let rounds = 1 + trial % 3;
+            let factors = sample_cavity_factors(mdds, &problem, &probs, 3, 3, rounds, &free);
+            for (index, constraint) in mdds.iter().enumerate() {
+                let mut prior = layer_weights_from_probs(constraint, &problem, &probs, 3);
+                if trial % 3 == 0 {
+                    // Probability outside the domain: the prior sums to less than one.
+                    let kept = rng.random_range(0.3..1.0);
+                    prior.iter_mut().flatten().for_each(|w| *w *= kept);
+                }
+                let labels: Vec<Vec<f64>> = prior
+                    .iter()
+                    .zip(&factors[index])
+                    .map(|(w, f)| cavity_labels(w, f))
+                    .collect();
+                let (log_wmc, gradient) = log_wmc_and_gradient(constraint, &labels);
+                let log_total = log_add_exp(log_wmc, WMC_EPS.ln());
+                let chain = -(log_wmc - log_total).exp();
+                for layer in 0..prior.len() {
+                    let scaled: Vec<f64> = gradient[layer].iter().map(|g| chain * g).collect();
+                    let reference =
+                        tilt_backward_reference(&prior[layer], &factors[index][layer], &scaled);
+                    let ours = prior_gradient(
+                        &prior[layer],
+                        &factors[index][layer],
+                        &gradient[layer],
+                        chain,
+                    );
+                    for (a, b) in reference.iter().zip(&ours) {
+                        let scale = 1.0 + a.abs().max(b.abs());
+                        let relative = (a - b).abs() / scale;
+                        assert!(
+                            relative < tolerance,
+                            "trial {trial}, layer {layer}: {reference:?} vs {ours:?}"
+                        );
+                        compared += 1;
+                    }
+                }
+            }
+        }
+        assert!(compared > 1000);
     }
 
     #[test]
