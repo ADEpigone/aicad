@@ -81,7 +81,7 @@ impl<B: Backend> Loss<B, ConsFormerBatch<B>> for ConsFormerLoss {
     ///
     /// If a problem has a constraint other than `NotEquals` or `AllDifferent`.
     fn loss(&self, logits: Tensor<B, 3>, batch: &ConsFormerBatch<B>) -> Tensor<B, 1> {
-        let probs = gumbel_softmax(logits);
+        let probs = gumbel_softmax(logits, 1.0);
         let probs = blend_with_current(probs, batch.assignments.clone(), batch.var_masks.clone());
         let problems = batch.problems();
         let batch_size = problems.len();

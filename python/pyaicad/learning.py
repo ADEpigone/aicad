@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 import os
 import random
 from dataclasses import dataclass, field
@@ -286,12 +287,23 @@ class Recipe:
     probabilities as they are; the gradient is taken with respect to them, the messages of belief propagation
     being constants. The setting has no effect on the ``"classical"`` loss.
 
+    ``gumbel_scale`` multiplies the Gumbel noise that is added to the network's logits before their
+    softmax turns them into the probabilities the ``"mdd"`` loss scores. ``1.0``, the default, is
+    the Gumbel-softmax relaxation of ConsFormer; ``0.0`` adds no noise, so the loss is the exact
+    expectation under the plain softmax of the logits, and is deterministic (so is the validation
+    loss that selects the best network). It applies to the whole loss, belief propagation
+    included, and has no effect on the ``"classical"`` loss.
+
     >>> Recipe.named("consformer-mdd").bp_rounds
     0
     >>> Recipe.named("consformer-mdd").replace(bp_rounds=1).bp_rounds
     1
     >>> Recipe.named("consformer-mdd").replace(bp_rounds=5).bp_rounds
     5
+    >>> Recipe.named("consformer-mdd").gumbel_scale
+    1.0
+    >>> Recipe.named("consformer-mdd").replace(gumbel_scale=0.0).gumbel_scale
+    0.0
     """
 
     name: str
@@ -301,12 +313,20 @@ class Recipe:
     order: Union[str, Tuple[int, ...]] = "auto"  # how constraint MDDs are ordered ("mdd" loss)
     merge: str = "state_similarity"  # and merged ("mdd" loss); has no effect on an exact compile
     bp_rounds: int = 0  # "mdd" loss: rounds of belief propagation that label the diagrams
+    gumbel_scale: float = 1.0  # "mdd" loss: scale of the Gumbel noise added to the logits (0: none)
 
     def __post_init__(self) -> None:
         if self.loss not in ("classical", "mdd"):
             raise ValueError(f"loss must be 'classical' or 'mdd', got {self.loss!r}")
         if isinstance(self.bp_rounds, bool) or not isinstance(self.bp_rounds, int) or self.bp_rounds < 0:
             raise ValueError(f"bp_rounds must be a non-negative integer, got {self.bp_rounds!r}")
+        if (
+            isinstance(self.gumbel_scale, bool)
+            or not isinstance(self.gumbel_scale, (int, float))
+            or not math.isfinite(self.gumbel_scale)
+            or self.gumbel_scale < 0
+        ):
+            raise ValueError(f"gumbel_scale must be a non-negative number, got {self.gumbel_scale!r}")
 
     @staticmethod
     def named(name: str) -> "Recipe":
@@ -566,5 +586,6 @@ def fit(
             pymerge=_merge_heuristic(recipe.merge),
             validation=validation,
             bp_rounds=recipe.bp_rounds,
+            gumbel_scale=float(recipe.gumbel_scale),
         )
     return Checkpoint.load(directory)

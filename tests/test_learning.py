@@ -75,6 +75,17 @@ def test_bp_rounds_is_a_recipe_setting_of_the_mdd_loss():
             r.replace(bp_rounds=bad)
 
 
+def test_gumbel_scale_is_a_recipe_setting_of_the_mdd_loss():
+    r = Recipe.named("consformer-mdd")
+    assert r.gumbel_scale == 1.0
+    assert r.replace(gumbel_scale=0.0).gumbel_scale == 0.0
+    assert r.replace(gumbel_scale=0.5).gumbel_scale == 0.5
+    assert r.gumbel_scale == 1.0  # the original is untouched
+    for bad in (-1.0, float("nan"), float("inf"), "1", True):
+        with pytest.raises(ValueError):
+            r.replace(gumbel_scale=bad)
+
+
 def test_the_default_optimiser_is_adam_and_its_settings_can_be_replaced():
     r = Recipe.named("consformer")
     assert r.training.optimiser == Adam()
@@ -166,6 +177,26 @@ def test_fit_with_the_mdd_loss_for_any_number_of_bp_rounds(tmp_path, bp_rounds):
         hidden_size=16,
         expand_size=16,
         bp_rounds=bp_rounds,
+    )
+    assert ckpt.domain_size == 3
+
+
+@needs_learning
+@pytest.mark.parametrize("gumbel_scale", [0.0, 0.5, 1.0])
+def test_fit_with_the_mdd_loss_for_any_gumbel_scale(tmp_path, gumbel_scale):
+    ckpt = learning.fit(
+        Dataset.split(problems(8), 0.25, seed=0),
+        "consformer-mdd",
+        checkpoint_dir=tmp_path / "ckpt",
+        seed=0,
+        epochs=2,
+        batch_size=2,
+        validation_interval=1,
+        embedding_size=16,
+        hidden_size=16,
+        expand_size=16,
+        bp_rounds=1,
+        gumbel_scale=gumbel_scale,
     )
     assert ckpt.domain_size == 3
 

@@ -85,6 +85,11 @@ predictions tilted by what the *other* constraints say about each variable, so t
 blind to them. The rounds are not differentiated through: the gradient is
 taken with respect to the predictions, the messages being constants.
 
+The predictions are the softmax of the network's logits after Gumbel noise, as in ConsFormer.
+`gumbel_scale` multiplies that noise: 1 (the default) is the Gumbel-softmax relaxation, 0 trains on the
+plain softmax, with no noise, which makes the loss, and the validation loss that keeps the best network,
+deterministic. It applies to the whole loss, belief propagation included.
+
 ```{code-cell} python
 checkpoint_dir = tempfile.mkdtemp()
 checkpoint = learning.fit(

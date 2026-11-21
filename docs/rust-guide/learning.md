@@ -40,8 +40,9 @@ A network is described by its configuration (`ConsFormerConfig`), and the optimi
 `TrainingConfig`. `train_consformer_mdd` scores the network with the exact probability that its
 predictions satisfy each constraint, computed on the constraint's diagram, labelled beforehand by
 `bp_rounds` rounds of belief propagation (0 scores the predictions as they are, the messages being
-constants of the gradient); `train_consformer` uses a
-hand-written penalty per constraint type. Both run on the best device found (CUDA if there is a GPU,
+constants of the gradient); the predictions are the softmax of the network's logits after Gumbel noise
+multiplied by `gumbel_scale` (1 is the Gumbel-softmax relaxation of ConsFormer, 0 adds no noise).
+`train_consformer` uses a hand-written penalty per constraint type. Both run on the best device found (CUDA if there is a GPU,
 the CPU otherwise), and have an `_on` variant that takes the backend. They write the best network and
 its configuration to the checkpoint directory.
 

@@ -152,6 +152,7 @@ def train_consformer_mdd(
     pyselect: PySelectHeuristic = ...,
     validation: Optional[List[PyProblem]] = ...,
     bp_rounds: int = ...,
+    gumbel_scale: float = ...,
 ) -> None: ...
 def local_search(
     problems: Any, config: PySolveConfig, checkpoint_dir: Optional[str] = ...

@@ -2,15 +2,19 @@
 //!
 //! Both losses read the logits as the probabilities of the variables the network re-predicts,
 //! and as one-hot values for the others: [`gumbel_softmax`] turns the logits into probabilities
-//! and [`blend_with_current`] pins the variables that are not re-predicted to their current value.
+//! (with noise or, at scale zero, without) and [`blend_with_current`] pins the variables that are not re-predicted to their current value.
 
 use burn::tensor::activation::softmax;
 use burn::tensor::backend::Backend;
 use burn::tensor::{Bool, Int, Tensor};
 
-/// Soft (differentiable) Gumbel-softmax relaxation: adds Gumbel(0,1) noise
-/// to `logits` before the softmax, instead of taking a plain softmax.
-pub(super) fn gumbel_softmax<B: Backend>(logits: Tensor<B, 3>) -> Tensor<B, 3> {
+/// Soft (differentiable) Gumbel-softmax relaxation: adds Gumbel(0,1) noise, multiplied by `scale`,
+/// to `logits` before the softmax, instead of taking a plain softmax. A `scale` of `1.0` is the
+/// standard relaxation; `0.0` draws no noise and is the plain softmax of the logits.
+pub(super) fn gumbel_softmax<B: Backend>(logits: Tensor<B, 3>, scale: f32) -> Tensor<B, 3> {
+    if scale == 0.0 {
+        return softmax(logits, 2);
+    }
     let device = logits.device();
     let u = Tensor::<B, 3>::random(
         logits.dims(),
@@ -19,7 +23,7 @@ pub(super) fn gumbel_softmax<B: Backend>(logits: Tensor<B, 3>) -> Tensor<B, 3> {
     );
     let neg_log_u = -u.log();
     let gumbel = -neg_log_u.log();
-    softmax(logits + gumbel, 2)
+    softmax(logits + gumbel.mul_scalar(scale), 2)
 }
 
 /// Keeps the variables that are not re-predicted at their current value: their probabilities

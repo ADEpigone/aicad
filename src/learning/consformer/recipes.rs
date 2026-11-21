@@ -147,6 +147,7 @@ pub fn train_consformer_mdd(
     training_config: TrainingConfig,
     compilation: MddCompilationConfig,
     bp_rounds: usize,
+    gumbel_scale: f32,
     checkpoint_dir: &Path,
 ) -> Result<(), String> {
     dispatch_backend!(
@@ -158,6 +159,7 @@ pub fn train_consformer_mdd(
         training_config,
         compilation,
         bp_rounds,
+        gumbel_scale,
         checkpoint_dir,
     )
 }
@@ -169,7 +171,14 @@ pub fn train_consformer_mdd(
 /// number of rounds of belief propagation that label the diagrams before the loss is computed:
 /// with zero the diagrams are labelled with the probabilities of the network themselves, with more
 /// the loss also sees what the other constraints say about each variable (see
-/// [`DecomposedMddLoss`]).
+/// [`DecomposedMddLoss`]). `gumbel_scale` multiplies the Gumbel noise added to the network's logits
+/// before their softmax: `1.0` is the Gumbel-softmax relaxation of ConsFormer, `0.0` trains on the
+/// plain softmax, without noise (the validation loss, used to keep the best network, is then
+/// deterministic too).
+///
+/// # Errors
+///
+/// If `gumbel_scale` is negative or not finite, or if the checkpoint directory cannot be prepared.
 #[allow(clippy::too_many_arguments)]
 pub fn train_consformer_mdd_on<B: AutodiffBackend>(
     device: B::Device,
@@ -179,14 +188,21 @@ pub fn train_consformer_mdd_on<B: AutodiffBackend>(
     training_config: TrainingConfig,
     compilation: MddCompilationConfig,
     bp_rounds: usize,
+    gumbel_scale: f32,
     checkpoint_dir: &Path,
 ) -> Result<(), String> {
+    if !gumbel_scale.is_finite() || gumbel_scale < 0.0 {
+        return Err(format!(
+            "the Gumbel scale must be finite and non-negative, got {gumbel_scale}"
+        ));
+    }
     prepare_checkpoint_dir(checkpoint_dir, &network_config)?;
 
     let (all_problems, problems, validation_problems) =
         split_train_validation(problems, validation);
-    let loss =
-        DecomposedMddLoss::new(compilation, network_config.domain_size).with_bp_rounds(bp_rounds);
+    let loss = DecomposedMddLoss::new(compilation, network_config.domain_size)
+        .with_bp_rounds(bp_rounds)
+        .with_gumbel_scale(gumbel_scale);
     let train_dataset = ConsFormerDataset::<B>::new(problems, &device);
     let validation_dataset =
         ConsFormerDataset::<B::InnerBackend>::new(validation_problems, &device);

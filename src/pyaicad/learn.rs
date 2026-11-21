@@ -221,7 +221,9 @@ pub(crate) fn train_consformer(
 /// recipe always refines to an exact, unbounded-width MDD, and `merge` only ever triggers once a
 /// width bound would be exceeded; see `MddCompilationConfig`'s doc). `bp_rounds` is the number of
 /// rounds of belief propagation that label each constraint's MDD before the loss is computed
-/// (0: the probabilities of the network as they are).
+/// (0: the probabilities of the network as they are). `gumbel_scale` multiplies the Gumbel noise
+/// added to the network's logits before their softmax (1: the Gumbel-softmax relaxation of
+/// ConsFormer; 0: no noise).
 ///
 /// Releases the GIL for the whole training run -- see `train_consformer`'s doc for why.
 #[pyfunction]
@@ -230,7 +232,8 @@ pub(crate) fn train_consformer(
         pymerge=PyMergeHeuristic::StateSimilarity,
         pyselect=PySelectHeuristic::Greedy,
         validation=None,
-        bp_rounds=0))]
+        bp_rounds=0,
+        gumbel_scale=1.0))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn train_consformer_mdd(
     py: Python<'_>,
@@ -243,6 +246,7 @@ pub(crate) fn train_consformer_mdd(
     pyselect: PySelectHeuristic,
     validation: Option<Vec<PyRef<PyProblem>>>,
     bp_rounds: usize,
+    gumbel_scale: f32,
 ) -> PyResult<()> {
     let problems: Vec<Arc<Problem>> = problems.iter().map(|p| p.arc()).collect();
     let validation: Option<Vec<Arc<Problem>>> =
@@ -279,6 +283,7 @@ pub(crate) fn train_consformer_mdd(
             training_config,
             compilation,
             bp_rounds,
+            gumbel_scale,
             &checkpoint_dir,
         )
     })

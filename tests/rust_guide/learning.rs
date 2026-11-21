@@ -67,7 +67,8 @@ fn a_network_is_trained_then_used_as_the_prior_of_a_search() {
         network,
         training_config,
         MddCompilationConfig::default(),
-        1, // rounds of belief propagation that label the diagrams before the loss
+        1,   // rounds of belief propagation that label the diagrams before the loss
+        1.0, // scale of the Gumbel noise added to the logits (0: no noise)
         &checkpoint,
     )
     .unwrap();

@@ -182,9 +182,10 @@
 //! ### 4f. With respect to the logits
 //!
 //! The network produces logits $z$, and $q = \mathrm{softmax}(z)$ for a variable that it
-//! re-predicts, so $s = 1$. (The logits here are those after the Gumbel noise; if they are divided
-//! by a temperature $\tau$ first, the gradient with respect to the raw output gets a factor
-//! $1 / \tau$.) The Jacobian of the softmax is $\partial q(v) / \partial z(u) = q(v) \ (\delta_{vu} - q(u))$,
+//! re-predicts, so $s = 1$. (The logits here are those after the Gumbel noise, scaled by `gumbel_scale`
+//! (zero: no noise); if they are divided by a temperature $\tau$ first, the gradient with respect
+//! to the raw output gets a factor $1 / \tau$. The noise is a constant of the gradient, so the
+//! formula does not depend on the scale.) The Jacobian of the softmax is $\partial q(v) / \partial z(u) = q(v) \ (\delta_{vu} - q(u))$,
 //! so the gradient of any function $L$ is
 //!
 //! $$\frac{\partial L}{\partial z(u)} = \sum_v \frac{\partial L}{\partial q(v)} \ q(v) \ \bigl(\delta_{vu} - q(u)\bigr) = q(u) \ \frac{\partial L}{\partial q(u)} - q(u) \sum_v q(v) \ \frac{\partial L}{\partial q(v)}.$$
@@ -614,6 +615,9 @@ pub struct DecomposedMddLoss {
     /// Rounds of belief propagation that label the diagrams before the loss is computed; none
     /// scores the probabilities of the network as they are.
     bp_rounds: usize,
+    /// Multiplier of the Gumbel(0, 1) noise added to the logits before their softmax: `1.0` is the
+    /// Gumbel-softmax relaxation, `0.0` no noise (and a deterministic loss).
+    gumbel_scale: f32,
     /// Where the MDDs are compiled, so that constraints of the same shape share their structure.
     arena: MddArena,
     /// The problems compiled by the last `compile`; they keep alive the addresses `compiled` is
@@ -637,6 +641,7 @@ impl DecomposedMddLoss {
             },
             domain_size,
             bp_rounds: 0,
+            gumbel_scale: 1.0,
             arena: MddArena::new(),
             problems: Vec::new(),
             compiled: HashMap::new(),
@@ -648,6 +653,25 @@ impl DecomposedMddLoss {
     /// module documentation. Zero, the default, is no belief propagation.
     pub fn with_bp_rounds(mut self, rounds: usize) -> Self {
         self.bp_rounds = rounds;
+        self
+    }
+
+    /// Sets the scale of the Gumbel noise added to the network's logits before the softmax that
+    /// turns them into the probabilities the loss scores. One, the default, is the Gumbel-softmax
+    /// relaxation of ConsFormer; zero adds no noise, so the probabilities are the plain softmax of
+    /// the logits and the loss is deterministic. The noise is added before both the labels of
+    /// the diagrams and the belief propagation read the probabilities, so the scale applies to
+    /// the whole loss (see the module documentation, 4f).
+    ///
+    /// # Panics
+    ///
+    /// If `scale` is negative or not finite.
+    pub fn with_gumbel_scale(mut self, scale: f32) -> Self {
+        assert!(
+            scale.is_finite() && scale >= 0.0,
+            "the Gumbel scale must be finite and non-negative, got {scale}"
+        );
+        self.gumbel_scale = scale;
         self
     }
 
@@ -835,7 +859,7 @@ impl<B: Backend> Loss<B, ConsFormerBatch<B>> for DecomposedMddLoss {
     }
 
     fn loss(&self, logits: Tensor<B, 3>, batch: &ConsFormerBatch<B>) -> Tensor<B, 1> {
-        let probs = gumbel_softmax(logits);
+        let probs = gumbel_softmax(logits, self.gumbel_scale);
         let probs = blend_with_current(probs, batch.assignments.clone(), batch.var_masks.clone());
         self.wmc_loss(probs, batch)
     }
@@ -1359,6 +1383,44 @@ mod loss_tests {
                 grad_values[i],
             );
         }
+    }
+
+    /// Without noise (`gumbel_scale` zero) the loss is a deterministic function of the logits, and
+    /// with noise (the default) two evaluations of the same logits differ.
+    #[test]
+    fn gumbel_scale_zero_makes_the_loss_deterministic() {
+        use burn::tensor::Distribution;
+
+        type Plain = NdArray;
+        let device = NdArrayDevice::default();
+        let (batch, loss_fn) = two_sample_batch::<Plain>(&device, 1.0);
+        let logits: Tensor<Plain, 3> =
+            Tensor::random([2, 3, 3], Distribution::Uniform(-1.0, 1.0), &device);
+        let value = |loss_fn: &DecomposedMddLoss| -> f32 {
+            loss_fn
+                .loss(logits.clone(), &batch)
+                .into_data()
+                .to_vec::<f32>()
+                .unwrap()[0]
+        };
+
+        let noisy = value(&loss_fn);
+        assert_ne!(
+            noisy,
+            value(&loss_fn),
+            "the default scale draws fresh noise"
+        );
+
+        let loss_fn = loss_fn.with_gumbel_scale(0.0);
+        let first = value(&loss_fn);
+        assert!(first.is_finite());
+        assert_eq!(first, value(&loss_fn), "scale zero draws no noise");
+    }
+
+    #[test]
+    #[should_panic(expected = "Gumbel scale")]
+    fn a_negative_gumbel_scale_is_refused() {
+        let _ = DecomposedMddLoss::new(MddCompilationConfig::default(), 3).with_gumbel_scale(-1.0);
     }
 
     /// End-to-end through the full `Loss::loss` path (`gumbel_softmax` + `blend_with_current` +
