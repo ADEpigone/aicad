@@ -446,9 +446,10 @@ fn completable(
 }
 
 /// The cavity factors of every constraint of a sample after `rounds` rounds of belief
-/// propagation from the probabilities of the network, see [`cavity_factors`]. The probabilities
-/// are masked as the weights of the diagrams are (`layer_weights_from_probs`): a value outside the
-/// real domain of its variable is impossible. Also returns the number of rounds that ran.
+/// propagation from the probabilities of the network, see
+/// [`cavity_factors`](crate::bp::cavity_factors). The probabilities are masked as the weights of
+/// the diagrams are (`layer_weights_from_probs`): a value outside the real domain of its variable
+/// is impossible. Also returns the number of rounds that ran.
 fn sample_cavity_factors(
     constraints: &[CompiledConstraint],
     real_problem: &Problem,
@@ -568,9 +569,9 @@ fn prior_gradient(prior: &[f64], factor: &[f64], count_gradient: &[f64], chain: 
 /// `probs_for_sample` is that sample's flattened `(number_vars, domain_size)` probability slice,
 /// indexed by each variable's *raw domain value*, not by `ValueIndex` position.
 /// `grad` accumulates `∂(-log(wmc+eps))/∂probs_for_sample` into that same indexing.
-/// With `factors` (one cavity factor per layer, see [`cavity_factors`]) the diagram is labelled
-/// with the cavity messages of the variables (scaled to the mass of their priors), and the gradient
-/// goes back to the probabilities through them.
+/// With `factors` (one cavity factor per layer, see [`cavity_factors`](crate::bp::cavity_factors))
+/// the diagram is labelled with the cavity messages of the variables (scaled to the mass of their
+/// priors), and the gradient goes back to the probabilities through them.
 fn mdd_loss_and_gradient(
     constraint: &CompiledConstraint,
     real_problem: &Problem,
@@ -648,8 +649,9 @@ fn sample_loss_and_gradient(
     (loss, grad)
 }
 
-/// [`sample_loss_and_gradient`], and the number of rounds of belief propagation that ran, `None`
-/// without belief propagation.
+/// The loss of a sample and its gradient with respect to its probabilities (see the module
+/// documentation), and the number of rounds of belief propagation that ran, `None` without belief
+/// propagation. Same arguments as `sample_loss_and_gradient`, its test-only wrapper.
 #[allow(clippy::too_many_arguments)]
 fn sample_loss_gradient_and_rounds(
     constraints: &[CompiledConstraint],
