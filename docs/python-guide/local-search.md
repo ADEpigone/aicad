@@ -77,6 +77,12 @@ for destroy in ("random", "worst", "related"):
     print(f"destroy {destroy:>8} 20%: solved {len(solved):>2} of {len(problems)}")
 ```
 
+Problem knowledge enters through *destroy units*: groups of variables that a repair should change
+together, declared on the model with {meth}`~pyaicad.Model.add_destroy_unit`. The `"unit"` operator
+frees whole units, those with a variable in a violated constraint more often, until the destroy
+fraction is reached; without declared units, it uses the scopes of the constraints that fit in the
+fraction, so that a constraint over most of the variables never turns a repair into a restart.
+
 ## Results
 
 A {class}`~pyaicad.Result` carries the assignment when one was found, and how the search went.

@@ -111,3 +111,35 @@ def test_belief_propagation_search_batches_problems_of_different_sizes():
 def test_belief_propagation_search_single_model_gives_a_single_result():
     r = ac.local_search(latin(4), ac.BeliefPropagationSearch(), Limits(iterations=20), seed=1)
     assert isinstance(r, ac.Result)
+
+
+def test_unit_destroy_solves_with_declared_units_and_without():
+    def rows_latin(declare):
+        m = ac.Model()
+        g = m.int_vars((4, 4), domain=range(4))
+        m.add(ac.all_different(r) for r in g)
+        m.add(ac.all_different([g[i][j] for i in range(4)]) for j in range(4))
+        if declare:  # the rows and the columns
+            for row in g:
+                m.add_destroy_unit(row)
+            for j in range(4):
+                m.add_destroy_unit([g[i][j] for i in range(4)])
+        return m
+
+    for declare in (False, True):
+        models = [rows_latin(declare) for _ in range(3)]
+        search = ac.BeliefPropagationSearch(destroy="unit", destroy_fraction=0.3, stochastic=True,
+                                            bp_iterations=3)
+        results = ac.local_search(models, search, Limits(iterations=2000), seed=0)
+        for model, r in zip(models, results):
+            assert r.found and model.check(r.assignment), declare
+
+
+def test_a_destroy_unit_must_hold_variables_of_the_model():
+    m, other = ac.Model(), ac.Model()
+    x = m.int_vars(2, domain=range(2))
+    y = other.int_var(range(2))
+    with pytest.raises(ac.ModelError):
+        m.add_destroy_unit([])
+    with pytest.raises(ac.ModelError):
+        m.add_destroy_unit([x[0], y])

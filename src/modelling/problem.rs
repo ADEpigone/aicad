@@ -8,6 +8,13 @@
 //! them. See the [module documentation](crate::modelling) for what an assignment and a solution are.
 //!
 //! A problem is plain data: it is `Send` and can be shared behind an `Arc` once built.
+//!
+//! # Destroy units
+//!
+//! A problem can also hold *destroy units*: groups of variables that the unit destroy operator
+//! (`crate::destroy::UnitDestroy`) frees together.
+//! They are the modeller's knowledge of which variables a repair should change at once, and have no
+//! meaning for the constraints. Units may overlap.
 
 use super::variable::Variable;
 use super::*;
@@ -19,6 +26,8 @@ pub struct Problem {
     variables: Vec<Variable>,
     /// Constraints of the problem.
     constraints: Vec<Box<dyn Constraint + Send + Sync>>,
+    /// Destroy units declared by the modeller, see the module documentation.
+    destroy_units: Vec<Vec<VariableIndex>>,
 }
 
 impl Problem {
@@ -61,6 +70,36 @@ impl Problem {
         }
         self.constraints.push(constraint);
         ret
+    }
+
+    /// Declares a destroy unit: variables that the unit destroy operator frees together (see the
+    /// module documentation). Duplicates in `variables` are ignored; the order does not matter.
+    ///
+    /// # Panics
+    ///
+    /// If `variables` is empty, or holds a variable that is not in the problem.
+    pub fn add_destroy_unit(&mut self, variables: impl IntoIterator<Item = VariableIndex>) {
+        let mut unit: Vec<VariableIndex> = variables.into_iter().collect();
+        assert!(
+            !unit.is_empty(),
+            "a destroy unit needs at least one variable"
+        );
+        for variable in &unit {
+            assert!(
+                variable.0 < self.variables.len(),
+                "a destroy unit has variable {}, but the problem has only {} variables",
+                variable.0,
+                self.variables.len()
+            );
+        }
+        unit.sort_by_key(|v| v.0);
+        unit.dedup();
+        self.destroy_units.push(unit);
+    }
+
+    /// The destroy units declared with [`add_destroy_unit`](Self::add_destroy_unit), in order.
+    pub fn destroy_units(&self) -> &[Vec<VariableIndex>] {
+        &self.destroy_units
     }
 
     /// Returns the number of variables in the problem
@@ -114,6 +153,7 @@ impl std::fmt::Debug for Problem {
         f.debug_struct("Problem")
             .field("variables", &self.number_variables())
             .field("constraints", &self.number_constraints())
+            .field("destroy_units", &self.destroy_units.len())
             .finish()
     }
 }

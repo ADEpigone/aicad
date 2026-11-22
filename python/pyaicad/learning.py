@@ -111,6 +111,7 @@ _DESTROY = {
     "random": _core.PyDestroyKind.Random,
     "worst": _core.PyDestroyKind.Worst,
     "related": _core.PyDestroyKind.Related,
+    "unit": _core.PyDestroyKind.Unit,
 }
 
 
@@ -249,13 +250,15 @@ class Training:
 
     ``destroy`` chooses the variables the network re-predicts in a training sample, the others
     keeping the values of a random assignment. ``"random"`` (the default) takes each variable with
-    probability ``mask_fraction``; ``"worst"`` and ``"related"`` are the destroy operators of the
-    local search, destroying a ``mask_fraction`` of the variables. With the ``"mdd"`` loss and a
+    probability ``mask_fraction``; ``"worst"``, ``"related"`` and ``"unit"`` are the destroy
+    operators of the local search, destroying a ``mask_fraction`` of the variables (``"unit"``
+    frees whole destroy units of the model, see :meth:`pyaicad.Model.add_destroy_unit`). With the ``"mdd"`` loss and a
     destroy operator, the kept variables are evidence in belief propagation, as in the repair of
     the local search, and the loss of a sample is the mean over the constraints that its kept
     values leave satisfiable: one they make infeasible has no gradient and would only add a
-    constant. ``"related"``, which destroys the scopes of a random set of constraints, matches
-    the default search. With ``"random"`` and a ``mask_fraction`` of 1, nothing is kept.
+    constant. Train with the operator the search will use, so that the network is trained on the
+    partial assignments it will repair. With ``"random"`` and a ``mask_fraction`` of 1, nothing is
+    kept.
     """
 
     optimiser: Optimiser = field(default_factory=Adam)

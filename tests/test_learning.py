@@ -210,8 +210,9 @@ def test_fit_with_the_mdd_loss_and_a_bp_tolerance(tmp_path):
 
 
 @needs_learning
+@pytest.mark.parametrize("destroy", ["related", "unit"])
 @pytest.mark.parametrize("bp_rounds", [0, 2])
-def test_fit_with_the_mdd_loss_and_a_destroy_operator(tmp_path, bp_rounds):
+def test_fit_with_the_mdd_loss_and_a_destroy_operator(tmp_path, bp_rounds, destroy):
     ckpt = learning.fit(
         Dataset.split(problems(8), 0.25, seed=0),
         "consformer-mdd",
@@ -223,7 +224,7 @@ def test_fit_with_the_mdd_loss_and_a_destroy_operator(tmp_path, bp_rounds):
         embedding_size=16,
         hidden_size=16,
         expand_size=16,
-        destroy="related",
+        destroy=destroy,
         mask_fraction=0.5,
         bp_rounds=bp_rounds,
     )

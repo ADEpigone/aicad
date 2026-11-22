@@ -206,6 +206,12 @@ impl PyProblem {
         Ok(())
     }
 
+    fn add_destroy_unit(&mut self, variables: Vec<usize>) -> PyResult<()> {
+        self.mutate()?
+            .add_destroy_unit(variables.into_iter().map(VariableIndex));
+        Ok(())
+    }
+
     fn is_solution(&self, solution: Vec<isize>) -> bool {
         self.inner.is_solution(&solution)
     }

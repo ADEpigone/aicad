@@ -36,7 +36,9 @@ the run reproducible, and the architecture of the search with its settings.
 
 The default search destroys every variable at each iteration, which is a restart from scratch.
 Destroying only a fraction makes it a real local search; `destroy_kind` chooses which ones: at
-random, where the constraints are violated (`Worst`), or around a variable (`Related`).
+random, where the constraints are violated (`Worst`), or around a variable (`Related`). `Unit` frees
+whole destroy units, groups of variables declared with `Problem::add_destroy_unit` (the scopes of
+the constraints that fit the fraction if there are none), those of violated constraints first.
 
 ```{literalinclude} ../../tests/rust_guide/local_search.rs
 :language: rust

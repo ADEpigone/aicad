@@ -95,6 +95,7 @@ _DESTROY = {
     "random": _core.PyDestroyKind.Random,
     "worst": _core.PyDestroyKind.Worst,
     "related": _core.PyDestroyKind.Related,
+    "unit": _core.PyDestroyKind.Unit,
 }
 
 
@@ -189,8 +190,9 @@ class NeuralPriorSearch(_LocalSearch):
         checkpoint: The trained network, a :class:`~pyaicad.learning.Checkpoint` or the path of
             one.
         destroy: Which variables are repaired at each iteration: ``"random"`` ones, the ``"worst"``
-            ones (those in the most violated constraints) or ``"related"`` ones (sharing
-            constraints with a first one).
+            ones (those in the most violated constraints), ``"related"`` ones (the scopes of
+            random constraints) or whole ``"unit"``\ s (the destroy units of the model, see
+            :meth:`~pyaicad.Model.add_destroy_unit`, those of violated constraints first).
         destroy_fraction: The fraction of the variables repaired at each iteration.
         stochastic: Sample the values from the network's prediction instead of taking the most
             likely ones.

@@ -560,7 +560,8 @@ class Model:
         self._domains: List[Tuple[int, ...]] = []  # current domains
         self._created: List[Tuple[int, ...]] = []  # domains at creation, before any `equal`
         # What the model is made of, in the order it was built: ("var", index), ("constraint",
-        # Constraint) or ("position", index, position). Replaying it builds the native problem.
+        # Constraint), ("position", index, position) or ("unit", indices). Replaying it builds
+        # the native problem.
         self._ops: List[Tuple[Any, ...]] = []
         self._constraints: List[Constraint] = []
         self._native: Optional[Any] = None
@@ -602,6 +603,31 @@ class Model:
         """
         self._own(var)
         self._ops.append(("position", var.index, tuple(_count(p, "position") for p in position)))
+        self._native = None
+
+    def add_destroy_unit(self, variables: Iterable[Var]) -> None:
+        """Declares variables that the ``"unit"`` destroy operator frees together.
+
+        A destroy unit is the modeller's knowledge of which variables a repair should change at
+        once: the shifts of one nurse, the jobs of one machine. At each iteration, the ``"unit"``
+        operator frees whole units, those with a variable in a violated constraint more often,
+        until the destroy fraction is reached (the last unit can overshoot it). Units may overlap; a
+        variable in no unit is a unit of its own. Without any unit, that operator uses the scopes
+        of the constraints that fit in the destroy fraction. Units have no meaning for the
+        constraints or for learned models.
+
+        >>> import pyaicad as ac
+        >>> m = ac.Model()
+        >>> x = m.int_vars((2, 3), domain=range(3))
+        >>> for row in x:
+        ...     m.add_destroy_unit(row)
+        """
+        unit = list(variables)
+        if not unit:
+            raise ModelError("a destroy unit needs at least one variable")
+        for var in unit:
+            self._own(var)
+        self._ops.append(("unit", tuple(sorted({v.index for v in unit}))))
         self._native = None
 
     # --- constraints --- #
@@ -731,6 +757,8 @@ class Model:
                     native.add_int_var(list(self._created[op[1]]))
                 elif kind == "constraint":
                     op[1]._apply(native)
+                elif kind == "unit":
+                    native.add_destroy_unit(list(op[1]))
                 else:  # "position"
                     native.set_variable_position(op[1], list(op[2]))
             self._native = native

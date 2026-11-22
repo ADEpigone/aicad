@@ -85,6 +85,7 @@ pub enum PyDestroyKind {
     Random,
     Worst,
     Related,
+    Unit,
 }
 
 impl From<&PyDestroyKind> for DestroyKind {
@@ -93,6 +94,7 @@ impl From<&PyDestroyKind> for DestroyKind {
             PyDestroyKind::Random => DestroyKind::Random,
             PyDestroyKind::Worst => DestroyKind::Worst,
             PyDestroyKind::Related => DestroyKind::Related,
+            PyDestroyKind::Unit => DestroyKind::Unit,
         }
     }
 }
