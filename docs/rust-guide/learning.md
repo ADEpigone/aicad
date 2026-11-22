@@ -42,6 +42,9 @@ predictions satisfy each constraint, computed on the constraint's diagram, label
 `bp_rounds` rounds of belief propagation (0 scores the predictions as they are, the messages being
 constants of the gradient); the predictions are the softmax of the network's logits after Gumbel noise
 multiplied by `gumbel_scale` (1 is the Gumbel-softmax relaxation of ConsFormer, 0 adds no noise).
+A destroy operator, if given, chooses the variables re-predicted in a training sample, as local search
+does; `train_consformer_mdd` then takes the loss of a sample over the constraints its kept values leave
+satisfiable.
 `train_consformer` uses a hand-written penalty per constraint type. Both run on the best device found (CUDA if there is a GPU,
 the CPU otherwise), and have an `_on` variant that takes the backend. They write the best network and
 its configuration to the checkpoint directory.

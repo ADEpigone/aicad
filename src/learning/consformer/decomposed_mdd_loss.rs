@@ -219,6 +219,37 @@
 //! - $\rho$ switches the signal off when $c$ is hopeless ($W \ll \varepsilon$): the loss is flat
 //!   at $-\ln \varepsilon$ there.
 //!
+//! # Training on partial assignments
+//!
+//! By default every variable with a choice is re-predicted (`mask_fraction` $= 1$). When training
+//! samples are made by a destroy operator instead, as local search repairs (see
+//! [`with_infeasible_constraints_skipped`](DecomposedMddLoss::with_infeasible_constraints_skipped)),
+//! the other variables are *kept* at the values of a random assignment: they are one-hot in the
+//! labels and decided in belief propagation, as in the repair of the local search
+//! (`crate::local_search::repair`). Every constraint stays in the factor graph, as there.
+//!
+//! The kept values can leave a constraint $c$ with no completion: every path of its MDD then
+//! crosses a kept layer on an edge of weight zero, and $W_c = 0$ whatever the network says. Such
+//! a constraint
+//!
+//! - has no gradient: $\rho = W / (W + \varepsilon) = 0$ in 4f;
+//! - sends the uniform message in belief propagation, every $\alpha \beta$ of its layers being
+//!   zero, so it drops out of the products of the marginals: it is neutral, at every round, and
+//!   at inference too;
+//! - but adds the constant $-\ln \varepsilon \approx 13.8$ to the mean.
+//!
+//! So the mean is taken over the constraints that the kept values leave satisfiable,
+//!
+//! $$L = \frac{1}{|S|} \sum_{c \in S} -\ln(\mathrm{WMC}_c + \varepsilon), \qquad S = \lbrace c : c \text{ has a solution that agrees with the kept values} \rbrace,$$
+//!
+//! which changes the scale of the loss and not its gradient direction within a sample: the
+//! constraints left out had no gradient. Whether $c \in S$ is decided by a count of $c$ with weight
+//! one on every value of a free variable and the one-hot of a kept one, not by $W_c$, which can be
+//! zero only because a confident probability was rounded to zero in `f32`. A sample with no
+//! satisfiable constraint has a loss and a gradient of zero, and still counts in the mean of the
+//! batch. With every variable re-predicted, every satisfiable problem has $S$ equal to all its
+//! constraints, and nothing changes.
+//!
 //! # Numerical considerations
 //!
 //! The formulas above say what is computed, not how. The implementation differs in the following
@@ -381,6 +412,35 @@ impl Evidence {
             decided: vec![false; number_vars],
         }
     }
+}
+
+/// Whether `constraint` has a solution that gives every decided variable of `evidence` its value
+/// (see the module documentation, *Training on partial assignments*): a count with weight one on
+/// every value of the domain of a free variable and the one-hot of a decided one.
+fn completable(
+    constraint: &CompiledConstraint,
+    real_problem: &Problem,
+    evidence: &Evidence,
+    domain_size: usize,
+) -> bool {
+    if constraint.order.iter().all(|v| !evidence.decided[v.0]) {
+        return true;
+    }
+    let weights: Vec<Vec<f64>> = constraint
+        .order
+        .iter()
+        .map(|&variable| {
+            (0..domain_size)
+                .map(|raw_value| {
+                    let allowed = real_problem[variable].in_domain(raw_value as isize)
+                        && (!evidence.decided[variable.0]
+                            || evidence.assignment[variable.0].0 == raw_value);
+                    if allowed { 1.0 } else { 0.0 }
+                })
+                .collect()
+        })
+        .collect();
+    crate::mdd::wmc::wmc(constraint, &weights) > 0.0
 }
 
 /// The cavity factors of every constraint of a sample after `rounds` rounds of belief
@@ -558,7 +618,10 @@ fn mdd_loss_and_gradient(
 /// `mdd_wmc_loss`).
 ///
 /// With `bp_rounds` above zero the diagrams are labelled after that many rounds of belief
-/// propagation (see the module documentation); `evidence` says which variables are pinned.
+/// propagation (see the module documentation); `evidence` says which variables are pinned. With
+/// `skip_infeasible`, the mean is over the constraints that the pinned values leave satisfiable
+/// (see *Training on partial assignments*), instead of over all of them.
+#[allow(clippy::too_many_arguments)]
 fn sample_loss_and_gradient(
     constraints: &[CompiledConstraint],
     real_problem: &Problem,
@@ -567,6 +630,7 @@ fn sample_loss_and_gradient(
     domain_size: usize,
     bp_rounds: usize,
     evidence: &Evidence,
+    skip_infeasible: bool,
 ) -> (f64, Vec<f32>) {
     let factors = (bp_rounds > 0).then(|| {
         sample_cavity_factors(
@@ -581,7 +645,12 @@ fn sample_loss_and_gradient(
     });
     let mut grad = vec![0.0f32; number_vars * domain_size];
     let mut loss_sum = 0.0;
+    let mut counted = 0usize;
     for (index, constraint) in constraints.iter().enumerate() {
+        if skip_infeasible && !completable(constraint, real_problem, evidence, domain_size) {
+            continue;
+        }
+        counted += 1;
         loss_sum += mdd_loss_and_gradient(
             constraint,
             real_problem,
@@ -593,7 +662,7 @@ fn sample_loss_and_gradient(
     }
     // `.max(1)` so a (degenerate) sample with zero constraints reads back as zero loss instead of
     // `0.0 / 0.0`, matching the previous floor-based behaviour's result in that case.
-    let denom = constraints.len().max(1) as f64;
+    let denom = counted.max(1) as f64;
     let loss = loss_sum / denom;
     for g in &mut grad {
         *g /= denom as f32;
@@ -618,6 +687,9 @@ pub struct DecomposedMddLoss {
     /// Multiplier of the Gumbel(0, 1) noise added to the logits before their softmax: `1.0` is the
     /// Gumbel-softmax relaxation, `0.0` no noise (and a deterministic loss).
     gumbel_scale: f32,
+    /// Whether the mean of a sample is over the constraints its kept values leave satisfiable
+    /// (see the module documentation), instead of over all of them.
+    skip_infeasible: bool,
     /// Where the MDDs are compiled, so that constraints of the same shape share their structure.
     arena: MddArena,
     /// The problems compiled by the last `compile`; they keep alive the addresses `compiled` is
@@ -642,6 +714,7 @@ impl DecomposedMddLoss {
             domain_size,
             bp_rounds: 0,
             gumbel_scale: 1.0,
+            skip_infeasible: false,
             arena: MddArena::new(),
             problems: Vec::new(),
             compiled: HashMap::new(),
@@ -672,6 +745,18 @@ impl DecomposedMddLoss {
             "the Gumbel scale must be finite and non-negative, got {scale}"
         );
         self.gumbel_scale = scale;
+        self
+    }
+
+    /// Takes the mean of each sample over the constraints that its kept variables (those it does
+    /// not re-predict) leave satisfiable, instead of over all of them; the default, `false`, counts
+    /// every constraint. A constraint left out had no gradient and only added $-\ln \varepsilon$
+    /// to the loss, and every constraint stays in belief propagation, as at inference. Meant for
+    /// samples made by a destroy operator, whose kept variables hold the values of a random
+    /// assignment: see the module documentation. When every variable is re-predicted the two give
+    /// the same loss.
+    pub fn with_infeasible_constraints_skipped(mut self, skip: bool) -> Self {
+        self.skip_infeasible = skip;
         self
     }
 
@@ -770,8 +855,9 @@ impl DecomposedMddLoss {
             .map(|problem| self.compiled_for(problem))
             .collect();
 
-        // The variables the network does not re-predict are evidence for belief propagation.
-        let evidence: Vec<Evidence> = if self.bp_rounds > 0 {
+        // The variables the network does not re-predict are evidence for belief propagation, and
+        // say which constraints are still satisfiable.
+        let evidence: Vec<Evidence> = if self.bp_rounds > 0 || self.skip_infeasible {
             let values = to_rows(&batch.assignments, batch_size, number_vars);
             // Through a float tensor: the storage of a bool tensor depends on the backend (a u8 on
             // CUDA, a native bool on ndarray), and `to_vec::<bool>` only accepts the latter.
@@ -827,6 +913,7 @@ impl DecomposedMddLoss {
                         domain_size,
                         self.bp_rounds,
                         evidence,
+                        self.skip_infeasible,
                     )
                 })
                 .collect()
@@ -1240,7 +1327,7 @@ mod loss_tests {
 
         let probs: Vec<f32> = vec![0.2, 0.5, 0.3, 0.1, 0.3, 0.6, 0.4, 0.4, 0.2];
         let (loss, _grad) =
-            sample_loss_and_gradient(mdds, &problem, &probs, 3, 3, 0, &Evidence::free(3));
+            sample_loss_and_gradient(mdds, &problem, &probs, 3, 3, 0, &Evidence::free(3), false);
 
         let probs_f64: Vec<f64> = probs.iter().map(|&v| v as f64).collect();
         let not_equals_wmc = brute_force_not_equals(&probs_f64, 3);
@@ -1267,14 +1354,22 @@ mod loss_tests {
 
         let probs: Vec<f32> = vec![0.2, 0.5, 0.3, 0.1, 0.3, 0.6, 0.4, 0.4, 0.2];
         let (base_loss, grad) =
-            sample_loss_and_gradient(mdds, &problem, &probs, 3, 3, 0, &Evidence::free(3));
+            sample_loss_and_gradient(mdds, &problem, &probs, 3, 3, 0, &Evidence::free(3), false);
 
         let eps = 1e-4f32;
         for i in 0..probs.len() {
             let mut bumped = probs.clone();
             bumped[i] += eps;
-            let (bumped_loss, _) =
-                sample_loss_and_gradient(mdds, &problem, &bumped, 3, 3, 0, &Evidence::free(3));
+            let (bumped_loss, _) = sample_loss_and_gradient(
+                mdds,
+                &problem,
+                &bumped,
+                3,
+                3,
+                0,
+                &Evidence::free(3),
+                false,
+            );
             let finite_diff = (bumped_loss - base_loss) / eps as f64;
             assert!(
                 (finite_diff - grad[i] as f64).abs() < 1e-2,
@@ -1415,6 +1510,55 @@ mod loss_tests {
         let first = value(&loss_fn);
         assert!(first.is_finite());
         assert_eq!(first, value(&loss_fn), "scale zero draws no noise");
+    }
+
+    /// The loss of fixed logits on a batch of the two problems of `two_sample_batch`, without
+    /// noise.
+    fn noiseless_loss(bp_rounds: usize, mask_fraction: f64, skip_infeasible: bool) -> f32 {
+        let device = NdArrayDevice::default();
+        let (batch, _) = two_sample_batch::<NdArray>(&device, mask_fraction);
+        let logits: Tensor<NdArray, 3> = Tensor::from_data(
+            [
+                [[0.3, -0.2, 0.9], [1.1, 0.0, -0.5], [-0.7, 0.4, 0.2]],
+                [[0.0, 0.8, -0.3], [0.5, 0.5, -1.0], [0.2, -0.6, 0.9]],
+            ],
+            &device,
+        );
+        let mut loss_fn = DecomposedMddLoss::new(MddCompilationConfig::default(), 3)
+            .with_bp_rounds(bp_rounds)
+            .with_gumbel_scale(0.0)
+            .with_infeasible_constraints_skipped(skip_infeasible);
+        loss_fn.compile(&batch.problems);
+        loss_fn
+            .loss(logits, &batch)
+            .into_data()
+            .to_vec::<f32>()
+            .unwrap()[0]
+    }
+
+    /// With every variable re-predicted every constraint of these problems is satisfiable, so
+    /// skipping the infeasible ones changes nothing, with or without belief propagation.
+    #[test]
+    fn skipping_infeasible_constraints_changes_nothing_when_every_variable_is_re_predicted() {
+        for rounds in [0, 2] {
+            let all = noiseless_loss(rounds, 1.0, false);
+            let skipped = noiseless_loss(rounds, 1.0, true);
+            assert!(all > 0.0 && all.is_finite());
+            assert_eq!(all, skipped, "bp_rounds={rounds}");
+        }
+    }
+
+    /// With every variable kept, a constraint is satisfied (a count of one) or infeasible. Skipping
+    /// the infeasible ones leaves a loss of about zero, while counting them adds
+    /// `-ln(WMC_EPS)` for each.
+    #[test]
+    fn skipped_constraints_do_not_add_the_loss_of_an_infeasible_count() {
+        for rounds in [0, 2] {
+            let skipped = noiseless_loss(rounds, 0.0, true);
+            let all = noiseless_loss(rounds, 0.0, false);
+            assert!(skipped.abs() < 1e-5, "bp_rounds={rounds}: {skipped}");
+            assert!(all >= skipped, "bp_rounds={rounds}: {all} < {skipped}");
+        }
     }
 
     #[test]
@@ -1616,6 +1760,29 @@ mod loss_tests {
         (problem, loss_fn)
     }
 
+    /// A constraint can be completed when some solution agrees with its kept values: keeping
+    /// `x2` alone leaves both constraints of the problem satisfiable, keeping `x0 = x1` neither.
+    #[test]
+    fn completable_constraints_have_a_solution_that_agrees_with_the_kept_values() {
+        let (problem, loss_fn) = two_constraint_problem();
+        let mdds = loss_fn.compiled_for(&problem);
+        let keeping = |kept: &[(usize, usize)]| Evidence {
+            assignment: (0..3)
+                .map(|v| ValueIndex(kept.iter().find(|k| k.0 == v).map_or(0, |k| k.1)))
+                .collect(),
+            decided: (0..3).map(|v| kept.iter().any(|k| k.0 == v)).collect(),
+        };
+        let completable_count = |evidence: &Evidence| {
+            mdds.iter()
+                .filter(|c| completable(c, &problem, evidence, 3))
+                .count()
+        };
+        assert_eq!(completable_count(&Evidence::free(3)), 2);
+        assert_eq!(completable_count(&keeping(&[(2, 1)])), 2);
+        assert_eq!(completable_count(&keeping(&[(0, 1), (1, 1)])), 0);
+        assert_eq!(completable_count(&keeping(&[(0, 0), (1, 1)])), 2);
+    }
+
     const TWO_CONSTRAINT_PROBS: [f32; 9] = [0.2, 0.5, 0.3, 0.1, 0.3, 0.6, 0.4, 0.4, 0.2];
 
     #[test]
@@ -1624,9 +1791,9 @@ mod loss_tests {
         let mdds = loss_fn.compiled_for(&problem);
         let free = Evidence::free(3);
         let (plain, _) =
-            sample_loss_and_gradient(mdds, &problem, &TWO_CONSTRAINT_PROBS, 3, 3, 0, &free);
+            sample_loss_and_gradient(mdds, &problem, &TWO_CONSTRAINT_PROBS, 3, 3, 0, &free, false);
         let (refined, grad) =
-            sample_loss_and_gradient(mdds, &problem, &TWO_CONSTRAINT_PROBS, 3, 3, 1, &free);
+            sample_loss_and_gradient(mdds, &problem, &TWO_CONSTRAINT_PROBS, 3, 3, 1, &free, false);
         assert!(refined.is_finite() && grad.iter().all(|g| g.is_finite()));
         assert!(
             (plain - refined).abs() > 1e-6,
@@ -1646,7 +1813,7 @@ mod loss_tests {
         let free = Evidence::free(3);
 
         let (plain, plain_grad) =
-            sample_loss_and_gradient(mdds, &problem, &TWO_CONSTRAINT_PROBS, 3, 3, 0, &free);
+            sample_loss_and_gradient(mdds, &problem, &TWO_CONSTRAINT_PROBS, 3, 3, 0, &free, false);
         for rounds in [1, 5] {
             let (refined, grad) = sample_loss_and_gradient(
                 mdds,
@@ -1656,6 +1823,7 @@ mod loss_tests {
                 3,
                 rounds,
                 &free,
+                false,
             );
             assert!((plain - refined).abs() < 1e-9, "{plain} vs {refined}");
             for (a, b) in plain_grad.iter().zip(&grad) {
@@ -1839,6 +2007,7 @@ mod loss_tests {
                     3,
                     rounds,
                     &Evidence::free(3),
+                    false,
                 );
                 assert!(
                     loss.is_finite() && grad.iter().all(|g| g.is_finite()),

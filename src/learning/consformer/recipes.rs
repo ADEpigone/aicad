@@ -140,11 +140,13 @@ pub fn train_consformer_on<B: AutodiffBackend>(
 
 /// Trains ConsFormer against the exact weighted model count of the MDD of each constraint, on the
 /// best device found. See [`train_consformer_mdd_on`].
+#[allow(clippy::too_many_arguments)]
 pub fn train_consformer_mdd(
     problems: Vec<Arc<Problem>>,
     validation: Option<Vec<Arc<Problem>>>,
     network_config: ConsFormerConfig,
     training_config: TrainingConfig,
+    destroy: Option<Arc<dyn DestroyOperator>>,
     compilation: MddCompilationConfig,
     bp_rounds: usize,
     gumbel_scale: f32,
@@ -157,6 +159,7 @@ pub fn train_consformer_mdd(
         validation,
         network_config,
         training_config,
+        destroy,
         compilation,
         bp_rounds,
         gumbel_scale,
@@ -166,8 +169,12 @@ pub fn train_consformer_mdd(
 
 /// Trains ConsFormer against the exact weighted model count of the MDD of each constraint (see
 /// [`DecomposedMddLoss`]), on the backend `B`. Otherwise like [`train_consformer_on`]: same network,
-/// same split, same checkpoint. Every variable is masked, so there is no destroy operator.
-/// `compilation` says how the MDDs are compiled, once, for all the problems. `bp_rounds` is the
+/// same split, same checkpoint. `destroy` picks the variables to re-predict in a training sample,
+/// as local search does; with `None`, they are a random `mask_fraction` of them (all of them for the
+/// usual `mask_fraction` of `1.0`). With a destroy operator, the kept variables hold the values of a
+/// random assignment and are evidence in belief propagation, as in the repair of the local search,
+/// and the loss of each sample is the mean over the constraints they leave satisfiable (see
+/// [`DecomposedMddLoss::with_infeasible_constraints_skipped`]). `compilation` says how the MDDs are compiled, once, for all the problems. `bp_rounds` is the
 /// number of rounds of belief propagation that label the diagrams before the loss is computed:
 /// with zero the diagrams are labelled with the probabilities of the network themselves, with more
 /// the loss also sees what the other constraints say about each variable (see
@@ -186,6 +193,7 @@ pub fn train_consformer_mdd_on<B: AutodiffBackend>(
     validation: Option<Vec<Arc<Problem>>>,
     network_config: ConsFormerConfig,
     training_config: TrainingConfig,
+    destroy: Option<Arc<dyn DestroyOperator>>,
     compilation: MddCompilationConfig,
     bp_rounds: usize,
     gumbel_scale: f32,
@@ -202,13 +210,14 @@ pub fn train_consformer_mdd_on<B: AutodiffBackend>(
         split_train_validation(problems, validation);
     let loss = DecomposedMddLoss::new(compilation, network_config.domain_size)
         .with_bp_rounds(bp_rounds)
-        .with_gumbel_scale(gumbel_scale);
+        .with_gumbel_scale(gumbel_scale)
+        .with_infeasible_constraints_skipped(destroy.is_some());
     let train_dataset = ConsFormerDataset::<B>::new(problems, &device);
     let validation_dataset =
         ConsFormerDataset::<B::InnerBackend>::new(validation_problems, &device);
     let batcher = ConsFormerBatcher {
         mask_fraction: network_config.mask_fraction,
-        destroy: None,
+        destroy,
     };
 
     train_model::<

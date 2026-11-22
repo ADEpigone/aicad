@@ -246,6 +246,16 @@ class Training:
     ``initial_weights`` is the checkpoint directory of an earlier run: its weights initialise the
     network before the first epoch, to continue or fine-tune that run. The network settings must
     be the ones the weights were trained with. By default the network starts from scratch.
+
+    ``destroy`` chooses the variables the network re-predicts in a training sample, the others
+    keeping the values of a random assignment. ``"random"`` (the default) takes each variable with
+    probability ``mask_fraction``; ``"worst"`` and ``"related"`` are the destroy operators of the
+    local search, destroying a ``mask_fraction`` of the variables. With the ``"mdd"`` loss and a
+    destroy operator, the kept variables are evidence in belief propagation, as in the repair of
+    the local search, and the loss of a sample is the mean over the constraints that its kept
+    values leave satisfiable: one they make infeasible has no gradient and would only add a
+    constant. ``"related"``, which destroys the scopes of a random set of constraints, matches
+    the default search. With ``"random"`` and a ``mask_fraction`` of 1, nothing is kept.
     """
 
     optimiser: Optimiser = field(default_factory=Adam)
@@ -255,7 +265,7 @@ class Training:
     early_stopping_patience: Optional[int] = None
     early_stopping_min_delta: float = 1e-4
     initial_weights: Optional[PathLike] = None
-    destroy: str = "random"  # which variables are re-predicted in a training step; "consformer" only
+    destroy: str = "random"  # which variables are re-predicted in a training step (see below)
 
     def __post_init__(self) -> None:
         if not isinstance(self.optimiser, (Adam, AdamW, SGD)):

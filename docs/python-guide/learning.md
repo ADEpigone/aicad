@@ -90,6 +90,12 @@ The predictions are the softmax of the network's logits after Gumbel noise, as i
 plain softmax, with no noise, which makes the loss, and the validation loss that keeps the best network,
 deterministic. It applies to the whole loss, belief propagation included.
 
+By default `consformer-mdd` re-predicts every variable from a random assignment. With `destroy="related"`
+(or `"worst"`), a training sample re-predicts a `mask_fraction` of the variables chosen by that destroy
+operator, as the local search does, and the others keep their random values. As in the repair of the
+search, the kept values are evidence for belief propagation, and the loss is the mean over the constraints
+they leave satisfiable: one they make infeasible has no gradient and would only add a constant.
+
 ```{code-cell} python
 checkpoint_dir = tempfile.mkdtemp()
 checkpoint = learning.fit(

@@ -223,7 +223,11 @@ pub(crate) fn train_consformer(
 /// rounds of belief propagation that label each constraint's MDD before the loss is computed
 /// (0: the probabilities of the network as they are). `gumbel_scale` multiplies the Gumbel noise
 /// added to the network's logits before their softmax (1: the Gumbel-softmax relaxation of
-/// ConsFormer; 0: no noise).
+/// ConsFormer; 0: no noise). `training.destroy_kind` picks the variables re-predicted in a
+/// training sample, as in `train_consformer`: `Random` (the default) a random `mask_fraction` of
+/// them, the others a destroy operator of that fraction, in which case the loss of each sample is the
+/// mean over the constraints that its kept values leave satisfiable (see
+/// `DecomposedMddLoss::with_infeasible_constraints_skipped`).
 ///
 /// Releases the GIL for the whole training run -- see `train_consformer`'s doc for why.
 #[pyfunction]
@@ -253,11 +257,9 @@ pub(crate) fn train_consformer_mdd(
         validation.map(|v| v.iter().map(|p| p.arc()).collect());
     let network_config: ConsFormerConfig = config.into();
     let training_config: TrainingConfig = training.into();
-    if !matches!(training.destroy_kind, PyDestroyKind::Random) {
-        return Err(PyValueError::new_err(
-            "train_consformer_mdd masks every variable and does not take a destroy_kind",
-        ));
-    }
+    let destroy = training
+        .destroy_kind
+        .training_operator(network_config.mask_fraction);
     let checkpoint_dir = PathBuf::from(checkpoint_dir);
     // The merge heuristic is not read while the MDDs are compiled with unbounded width, and the
     // problems of a training set do not share their domains: `MostLikely` takes the uniform
@@ -281,6 +283,7 @@ pub(crate) fn train_consformer_mdd(
             validation,
             network_config,
             training_config,
+            destroy,
             compilation,
             bp_rounds,
             gumbel_scale,
