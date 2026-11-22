@@ -133,9 +133,6 @@ class PySolveConfig:
 class PySolution:
     runtime: float
     compilation_runtime: float
-    bp_rounds_mean: Optional[float]
-    bp_rounds_std: Optional[float]
-    bp_rounds_max: Optional[int]
     iterations: Optional[int]
     solution: Optional[List[int]]
     status: PyStatus

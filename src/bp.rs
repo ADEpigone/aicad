@@ -466,24 +466,7 @@ pub fn belief_propagation(
     decided: &[bool],
     rounds: impl Into<BpRounds>,
 ) -> Vec<Vec<f64>> {
-    belief_propagation_with_rounds(mdds, probs, assignment, decided, rounds).0
-}
-
-/// [`belief_propagation`], and the number of rounds that ran: the most rounds of `rounds`, or
-/// fewer if the marginals settled first.
-///
-/// # Panics
-///
-/// Under the same conditions as [`belief_propagation`].
-pub fn belief_propagation_with_rounds(
-    mdds: &[CompiledConstraint],
-    probs: &[Vec<f64>],
-    assignment: &[ValueIndex],
-    decided: &[bool],
-    rounds: impl Into<BpRounds>,
-) -> (Vec<Vec<f64>>, usize) {
-    let propagated = propagate(mdds, probs, assignment, decided, rounds.into());
-    (propagated.marginals, propagated.rounds_run)
+    propagate(mdds, probs, assignment, decided, rounds.into()).marginals
 }
 
 /// What the other constraints say about each variable of each MDD, after `rounds` rounds of
@@ -856,7 +839,7 @@ mod tests {
         let (mdds, probs) = not_equals_inputs();
         let assignment = vec![ValueIndex(0); 2];
         let decided = vec![false; 2];
-        let (_, rounds) = belief_propagation_with_rounds(&mdds, &probs, &assignment, &decided, 4);
+        let (_, rounds) = cavity_factors_with_rounds(&mdds, &probs, &assignment, &decided, 4);
         assert_eq!(rounds, 4);
         let (_, rounds) = cavity_factors_with_rounds(
             &mdds,

@@ -1,7 +1,6 @@
 //! The outcome of solving a [`Problem`]: a status, a full solution if one was found, and the cost.
 
 use super::Problem;
-use crate::bp::RoundsStats;
 
 /// Status of the solution returned. (Un)satisfiable only if proved, and unknown otherwise.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,9 +33,6 @@ pub struct Solution {
     compilation_runtime: f64,
     /// Number of steps of the search, `None` for a method without any.
     iterations: Option<usize>,
-    /// The rounds of belief propagation of the steps of the search, empty for a method without
-    /// belief propagation.
-    bp_rounds: RoundsStats,
 }
 
 impl Solution {
@@ -77,7 +73,6 @@ impl Solution {
             runtime: 0.0,
             compilation_runtime: 0.0,
             iterations: None,
-            bp_rounds: RoundsStats::default(),
         }
     }
 
@@ -91,12 +86,6 @@ impl Solution {
     /// Records the number of steps of the search.
     pub fn with_iterations(mut self, iterations: usize) -> Self {
         self.iterations = Some(iterations);
-        self
-    }
-
-    /// Records the rounds of belief propagation of the steps of the search.
-    pub fn with_bp_rounds(mut self, bp_rounds: RoundsStats) -> Self {
-        self.bp_rounds = bp_rounds;
         self
     }
 
@@ -125,12 +114,6 @@ impl Solution {
     /// Number of steps of the search, `None` for a method without any.
     pub fn iterations(&self) -> Option<usize> {
         self.iterations
-    }
-
-    /// The rounds of belief propagation per step of the search (with a tolerance, fewer than the
-    /// most when the marginals settled), empty for a method without belief propagation.
-    pub fn bp_rounds(&self) -> &RoundsStats {
-        &self.bp_rounds
     }
 }
 

@@ -55,7 +55,6 @@ pub use neural_prior::{
     solve_with_network,
 };
 
-use crate::bp::RoundsStats;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
@@ -135,12 +134,6 @@ pub trait SearchState {
     /// Drops the rows not flagged in `keep`; the others keep their order. Does nothing by default,
     /// for a state that holds nothing per row.
     fn retain(&mut self, _keep: &[bool]) {}
-
-    /// The rounds of belief propagation run so far to repair `row`. Empty by default, for a search
-    /// without belief propagation.
-    fn bp_rounds(&self, _row: usize) -> RoundsStats {
-        RoundsStats::default()
-    }
 }
 
 /// A random starting assignment for each of `problems`, each value drawn from its domain by `rng`,
@@ -282,8 +275,7 @@ impl LocalSearch {
                     solutions[problem_idx] = Some(
                         Solution::satisfiable(&problems[problem_idx], assignments[row].clone())
                             .with_runtime(stop.start.elapsed().as_secs_f64(), preprocessing_runtime)
-                            .with_iterations(stop.iters_done)
-                            .with_bp_rounds(state.bp_rounds(row)),
+                            .with_iterations(stop.iters_done),
                     );
                     if let Some(bar) = progress {
                         bar.inc(1);
@@ -308,20 +300,13 @@ impl LocalSearch {
             }
         }
 
-        // The row of each problem still in the state, for the rounds of those left unsolved.
-        let mut row_of = vec![None; problems.len()];
-        for (row, &problem_idx) in active.iter().enumerate() {
-            row_of[problem_idx] = Some(row);
-        }
         Ok(solutions
             .into_iter()
-            .zip(row_of)
-            .map(|(s, row)| {
+            .map(|s| {
                 s.unwrap_or_else(|| {
                     Solution::unknown()
                         .with_runtime(stop.start.elapsed().as_secs_f64(), preprocessing_runtime)
                         .with_iterations(stop.iters_done)
-                        .with_bp_rounds(row.map(|row| state.bp_rounds(row)).unwrap_or_default())
                 })
             })
             .collect())

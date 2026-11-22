@@ -79,11 +79,6 @@ class Result:
     compile_time: float  #: seconds spent compiling the diagrams the search uses
     iterations: Optional[int]  #: iterations of the search
     search: str  #: which search produced it: "neural-prior", "neural-prior-bp" or "bp"
-    #: mean rounds of belief propagation per iteration (fewer than ``bp_iterations`` when a
-    #: ``bp_tolerance`` stopped them early); ``None`` for a search without belief propagation
-    bp_rounds_mean: Optional[float] = None
-    bp_rounds_std: Optional[float] = None  #: their standard deviation over the iterations
-    bp_rounds_max: Optional[int] = None  #: the most rounds of an iteration
 
     @property
     def found(self) -> bool:
@@ -165,9 +160,6 @@ class _LocalSearch:
                 compile_time=s.compilation_runtime,
                 iterations=s.iterations,
                 search=self.name,
-                bp_rounds_mean=s.bp_rounds_mean,
-                bp_rounds_std=s.bp_rounds_std,
-                bp_rounds_max=s.bp_rounds_max,
             )
             for s in solutions
         ]

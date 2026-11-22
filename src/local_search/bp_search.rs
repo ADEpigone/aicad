@@ -23,7 +23,7 @@ use crate::sampling::DecodeMode;
 
 use super::repair::{BatchRepair, MddRepair};
 use super::{SearchArchitecture, SearchState, destroy_rows, row_seeds};
-use crate::bp::{BpRounds, RoundsStats};
+use crate::bp::BpRounds;
 
 /// The settings of the belief-propagation local search.
 #[derive(Debug, Clone)]
@@ -138,10 +138,6 @@ impl SearchState for BeliefPropagationState<'_> {
     fn retain(&mut self, keep: &[bool]) {
         self.repair.retain(keep);
     }
-
-    fn bp_rounds(&self, row: usize) -> RoundsStats {
-        self.repair.bp_rounds(row)
-    }
 }
 
 #[cfg(test)]
@@ -178,40 +174,6 @@ mod tests {
         for (problem, solution) in problems.iter().zip(&solutions) {
             let values = solution.assignment().expect("an easy problem is solved");
             assert!(problem.is_solution(values));
-        }
-    }
-
-    #[test]
-    fn a_solution_records_the_rounds_of_belief_propagation_of_its_iterations() {
-        // Without a tolerance every iteration runs the most rounds; with a loose one, never more
-        // and on average fewer.
-        let problems = vec![clique(6, 6), clique(6, 6)];
-        let run = |bp_tolerance: f64| {
-            let search = LocalSearch::new(Box::new(BeliefPropagationSearch::new(
-                &BeliefPropagationSearchConfig {
-                    destroy_fraction: 0.5,
-                    bp_iterations: 8,
-                    bp_tolerance,
-                    ..BeliefPropagationSearchConfig::default()
-                },
-            )));
-            let budget = Budget {
-                iteration_limit: 50,
-                ..Budget::default()
-            };
-            search.run(&problems, budget, 0, None).unwrap()
-        };
-        for solution in run(0.0) {
-            let rounds = solution.bp_rounds();
-            assert!(rounds.count() >= 1);
-            assert!(rounds.count() as usize <= solution.iterations().unwrap());
-            assert_eq!(rounds.mean(), Some(8.0));
-            assert_eq!(rounds.std(), Some(0.0));
-        }
-        for solution in run(0.1) {
-            let rounds = solution.bp_rounds();
-            assert!(rounds.max().unwrap() <= 8);
-            assert!(rounds.mean().unwrap() < 8.0, "{rounds:?}");
         }
     }
 }
