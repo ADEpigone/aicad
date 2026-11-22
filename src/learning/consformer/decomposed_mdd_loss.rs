@@ -66,7 +66,9 @@
 //!
 //! ## 1. The cavity factors
 //!
-//! Run $k$ rounds of belief propagation from the priors $q$. Variables that the network does not
+//! Run $k$ rounds of belief propagation from the priors $q$ (fewer if a tolerance is set with
+//! [`DecomposedMddLoss::with_bp_tolerance`] and the marginals settle first, see
+//! [`crate::bp::BpRounds`]). Variables that the network does not
 //! re-predict are `decided`: their prior is a one-hot on their current value. Let
 //! $\mu_{c^\prime \to x}$ be the message of the constraint $c^\prime$ to the variable $x$ in the last round
 //! (a likelihood, see [`crate::bp`]). The *cavity factor* of $x$ for $c$ is the evidence about $x$
@@ -350,7 +352,7 @@ use burn::tensor::backend::Backend;
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 
-use crate::bp::cavity_factors;
+use crate::bp::{BpRounds, cavity_factors};
 use crate::learning::Loss;
 use crate::mdd::arena::{MddCompilationConfig, compile_constraints};
 use crate::mdd::wmc::log_wmc_and_gradient;
@@ -453,7 +455,7 @@ fn sample_cavity_factors(
     probs_for_sample: &[f32],
     number_vars: usize,
     domain_size: usize,
-    rounds: usize,
+    rounds: impl Into<BpRounds>,
     evidence: &Evidence,
 ) -> Vec<Vec<Vec<f64>>> {
     let priors: Vec<Vec<f64>> = (0..number_vars)
@@ -617,10 +619,10 @@ fn mdd_loss_and_gradient(
 /// `∂(that average)/∂probs` (`mdds` iterated sequentially -- parallelism is across samples, see
 /// `mdd_wmc_loss`).
 ///
-/// With `bp_rounds` above zero the diagrams are labelled after that many rounds of belief
-/// propagation (see the module documentation); `evidence` says which variables are pinned. With
-/// `skip_infeasible`, the mean is over the constraints that the pinned values leave satisfiable
-/// (see *Training on partial assignments*), instead of over all of them.
+/// With `bp_rounds` allowing a round or more, the diagrams are labelled after the rounds of belief
+/// propagation that run (see the module documentation); `evidence` says which variables are pinned.
+/// With `skip_infeasible`, the mean is over the constraints that the pinned values leave
+/// satisfiable (see *Training on partial assignments*), instead of over all of them.
 #[allow(clippy::too_many_arguments)]
 fn sample_loss_and_gradient(
     constraints: &[CompiledConstraint],
@@ -628,11 +630,12 @@ fn sample_loss_and_gradient(
     probs_for_sample: &[f32],
     number_vars: usize,
     domain_size: usize,
-    bp_rounds: usize,
+    bp_rounds: impl Into<BpRounds>,
     evidence: &Evidence,
     skip_infeasible: bool,
 ) -> (f64, Vec<f32>) {
-    let factors = (bp_rounds > 0).then(|| {
+    let bp_rounds = bp_rounds.into();
+    let factors = (bp_rounds.max > 0).then(|| {
         sample_cavity_factors(
             constraints,
             real_problem,
@@ -684,6 +687,9 @@ pub struct DecomposedMddLoss {
     /// Rounds of belief propagation that label the diagrams before the loss is computed; none
     /// scores the probabilities of the network as they are.
     bp_rounds: usize,
+    /// Belief propagation stops before `bp_rounds` once no marginal moves by this much in a round
+    /// (see [`BpRounds`]); zero runs every round.
+    bp_tolerance: f64,
     /// Multiplier of the Gumbel(0, 1) noise added to the logits before their softmax: `1.0` is the
     /// Gumbel-softmax relaxation, `0.0` no noise (and a deterministic loss).
     gumbel_scale: f32,
@@ -713,6 +719,7 @@ impl DecomposedMddLoss {
             },
             domain_size,
             bp_rounds: 0,
+            bp_tolerance: 0.0,
             gumbel_scale: 1.0,
             skip_infeasible: false,
             arena: MddArena::new(),
@@ -726,6 +733,18 @@ impl DecomposedMddLoss {
     /// module documentation. Zero, the default, is no belief propagation.
     pub fn with_bp_rounds(mut self, rounds: usize) -> Self {
         self.bp_rounds = rounds;
+        self
+    }
+
+    /// Stops belief propagation before its `bp_rounds` rounds once no marginal moves by
+    /// `tolerance` or more in a round, in total variation distance (see [`BpRounds`]); the
+    /// factors are then those of the last round that ran. Zero, the default, runs every round.
+    ///
+    /// # Panics
+    ///
+    /// If `tolerance` is negative or not finite.
+    pub fn with_bp_tolerance(mut self, tolerance: f64) -> Self {
+        self.bp_tolerance = BpRounds::until_converged(0, tolerance).tolerance;
         self
     }
 
@@ -911,7 +930,7 @@ impl DecomposedMddLoss {
                         sample_probs,
                         number_vars,
                         domain_size,
-                        self.bp_rounds,
+                        BpRounds::until_converged(self.bp_rounds, self.bp_tolerance),
                         evidence,
                         self.skip_infeasible,
                     )

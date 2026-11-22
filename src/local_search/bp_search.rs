@@ -23,6 +23,7 @@ use crate::sampling::DecodeMode;
 
 use super::repair::{BatchRepair, MddRepair};
 use super::{SearchArchitecture, SearchState, destroy_rows, row_seeds};
+use crate::bp::BpRounds;
 
 /// The settings of the belief-propagation local search.
 #[derive(Debug, Clone)]
@@ -33,8 +34,12 @@ pub struct BeliefPropagationSearchConfig {
     pub destroy_fraction: f64,
     /// Sample values from the marginals instead of taking the most likely one.
     pub stochastic: bool,
-    /// Number of belief-propagation rounds per iteration.
+    /// Number of belief-propagation rounds per iteration: the most, if `bp_tolerance` is positive.
     pub bp_iterations: usize,
+    /// Stops belief propagation before `bp_iterations` rounds once no marginal moves by this much
+    /// in a round, in total variation distance (see [`crate::bp::BpRounds`]). Zero, the default,
+    /// runs every round.
+    pub bp_tolerance: f64,
 }
 
 impl Default for BeliefPropagationSearchConfig {
@@ -46,6 +51,7 @@ impl Default for BeliefPropagationSearchConfig {
             // leaves it, so the default samples.
             stochastic: true,
             bp_iterations: 1,
+            bp_tolerance: 0.0,
         }
     }
 }
@@ -57,7 +63,7 @@ pub struct BeliefPropagationSearch {
     /// How a value is taken from a marginal.
     mode: DecodeMode,
     /// Rounds of belief propagation per iteration.
-    bp_iterations: usize,
+    bp_rounds: BpRounds,
 }
 
 impl BeliefPropagationSearch {
@@ -70,7 +76,7 @@ impl BeliefPropagationSearch {
             } else {
                 DecodeMode::Greedy
             },
-            bp_iterations: config.bp_iterations,
+            bp_rounds: BpRounds::until_converged(config.bp_iterations, config.bp_tolerance),
         }
     }
 }
@@ -83,7 +89,7 @@ impl SearchArchitecture for BeliefPropagationSearch {
             MddCompilationConfig::default(),
             domain_size,
             self.mode,
-            self.bp_iterations,
+            self.bp_rounds,
         );
         Ok(Box::new(BeliefPropagationState {
             search: self,

@@ -127,6 +127,7 @@ pub enum PySearch {
         destroy_fraction: f64,
         stochastic: bool,
         bp_iterations: usize,
+        bp_tolerance: f64,
     },
     /// Belief propagation over the MDDs of the constraints from uniform probabilities, on the CPU
     /// only: no network and no checkpoint.
@@ -135,6 +136,7 @@ pub enum PySearch {
         destroy_fraction: f64,
         stochastic: bool,
         bp_iterations: usize,
+        bp_tolerance: f64,
     },
 }
 
@@ -162,22 +164,26 @@ impl TryFrom<&PySearch> for SearchConfig {
                 destroy_fraction,
                 stochastic,
                 bp_iterations,
+                bp_tolerance,
             } => SearchConfig::NeuralPriorBp(NeuralPriorBpSearchConfig {
                 destroy_kind: destroy_kind.into(),
                 destroy_fraction: *destroy_fraction,
                 stochastic: *stochastic,
                 bp_iterations: *bp_iterations,
+                bp_tolerance: *bp_tolerance,
             }),
             PySearch::BeliefPropagation {
                 destroy_kind,
                 destroy_fraction,
                 stochastic,
                 bp_iterations,
+                bp_tolerance,
             } => SearchConfig::BeliefPropagation(BeliefPropagationSearchConfig {
                 destroy_kind: destroy_kind.into(),
                 destroy_fraction: *destroy_fraction,
                 stochastic: *stochastic,
                 bp_iterations: *bp_iterations,
+                bp_tolerance: *bp_tolerance,
             }),
             #[cfg(not(feature = "learning"))]
             PySearch::NeuralPrior { .. } | PySearch::NeuralPriorBp { .. } => {

@@ -40,7 +40,7 @@ A network is described by its configuration (`ConsFormerConfig`), and the optimi
 `TrainingConfig`. `train_consformer_mdd` scores the network with the exact probability that its
 predictions satisfy each constraint, computed on the constraint's diagram, labelled beforehand by
 `bp_rounds` rounds of belief propagation (0 scores the predictions as they are, the messages being
-constants of the gradient); the predictions are the softmax of the network's logits after Gumbel noise
+constants of the gradient; a positive `bp_tolerance` stops the rounds once the marginals settle); the predictions are the softmax of the network's logits after Gumbel noise
 multiplied by `gumbel_scale` (1 is the Gumbel-softmax relaxation of ConsFormer, 0 adds no noise).
 A destroy operator, if given, chooses the variables re-predicted in a training sample, as local search
 does; `train_consformer_mdd` then takes the loss of a sample over the constraints its kept values leave

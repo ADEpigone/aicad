@@ -69,6 +69,7 @@ fn a_network_is_trained_then_used_as_the_prior_of_a_search() {
         None, // no destroy operator: a random `mask_fraction` of the variables is re-predicted
         MddCompilationConfig::default(),
         1,   // rounds of belief propagation that label the diagrams before the loss
+        0.0, // tolerance that stops them earlier once the marginals settle (0: every round)
         1.0, // scale of the Gumbel noise added to the logits (0: no noise)
         &checkpoint,
     )

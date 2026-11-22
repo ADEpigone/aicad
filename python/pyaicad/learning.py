@@ -295,7 +295,10 @@ class Recipe:
     say about the variable. The loss then sees the other constraints, and scores the weights that
     the search labels its diagrams with. ``0``, the default, labels the diagrams with the network's
     probabilities as they are; the gradient is taken with respect to them, the messages of belief propagation
-    being constants. The setting has no effect on the ``"classical"`` loss.
+    being constants. The setting has no effect on the ``"classical"`` loss. With a positive
+    ``bp_tolerance``, ``bp_rounds`` is the most rounds: belief propagation stops earlier once no
+    marginal moves by ``bp_tolerance`` or more in a round (total variation distance). ``0.0``, the
+    default, runs every round.
 
     ``gumbel_scale`` multiplies the Gumbel noise that is added to the network's logits before their
     softmax turns them into the probabilities the ``"mdd"`` loss scores. ``1.0``, the default, is
@@ -323,6 +326,7 @@ class Recipe:
     order: Union[str, Tuple[int, ...]] = "auto"  # how constraint MDDs are ordered ("mdd" loss)
     merge: str = "state_similarity"  # and merged ("mdd" loss); has no effect on an exact compile
     bp_rounds: int = 0  # "mdd" loss: rounds of belief propagation that label the diagrams
+    bp_tolerance: float = 0.0  # "mdd" loss: stops those rounds once the marginals settle (0: never)
     gumbel_scale: float = 1.0  # "mdd" loss: scale of the Gumbel noise added to the logits (0: none)
 
     def __post_init__(self) -> None:
@@ -330,6 +334,13 @@ class Recipe:
             raise ValueError(f"loss must be 'classical' or 'mdd', got {self.loss!r}")
         if isinstance(self.bp_rounds, bool) or not isinstance(self.bp_rounds, int) or self.bp_rounds < 0:
             raise ValueError(f"bp_rounds must be a non-negative integer, got {self.bp_rounds!r}")
+        if (
+            isinstance(self.bp_tolerance, bool)
+            or not isinstance(self.bp_tolerance, (int, float))
+            or not math.isfinite(self.bp_tolerance)
+            or self.bp_tolerance < 0
+        ):
+            raise ValueError(f"bp_tolerance must be a non-negative number, got {self.bp_tolerance!r}")
         if (
             isinstance(self.gumbel_scale, bool)
             or not isinstance(self.gumbel_scale, (int, float))
@@ -596,6 +607,7 @@ def fit(
             pymerge=_merge_heuristic(recipe.merge),
             validation=validation,
             bp_rounds=recipe.bp_rounds,
+            bp_tolerance=float(recipe.bp_tolerance),
             gumbel_scale=float(recipe.gumbel_scale),
         )
     return Checkpoint.load(directory)

@@ -85,7 +85,22 @@
 //!    division, $c$ would receive its own opinion back as new evidence and count it twice. The new
 //!    messages label the layer of $x$ in the MDD of $c$ for the next round.
 //!
-//! After `iterations` rounds the marginals $m_x$ are returned. With no round they are the priors.
+//! After the rounds (see [`BpRounds`]) the marginals $m_x$ are returned. With no round they are
+//! the priors.
+//!
+//! ## When to stop
+//!
+//! [`BpRounds`] gives the most rounds to run, and a `tolerance`. After each round, the change of a
+//! variable's marginal is the total variation distance between its marginals after and before the
+//! round,
+//!
+//! $$\delta_x = \frac{1}{2} \sum_v \left| m^{(k)}_x(v) - m^{(k-1)}_x(v) \right|,$$
+//!
+//! with $m^{(0)}_x$ the prior, and belief propagation stops as soon as every $\delta_x$ is below
+//! the tolerance: the messages have (nearly) reached a fixed point, and further rounds would change
+//! the marginals by less than that. On a factor graph with loops there may be no fixed point, the
+//! marginals oscillating from round to round, which is what the most rounds bound. A tolerance of
+//! zero never stops early: exactly the most rounds are run, as with a plain number of rounds.
 //!
 //! ## Decided variables
 //!
@@ -110,9 +125,14 @@
 //! - **Exact for one constraint, approximate for several.** With a single constraint, one round
 //!   gives the marginal $\Pr[x = v \mid c]$ under the priors. With several, the product in step 2
 //!   treats the constraints as independent evidence, which they are not when their scopes
-//!   overlap, hence an approximation. There is no convergence check: a handful of rounds is meant
-//!   to run inside the search, and Pesant observes that a few rounds capture most of the benefit,
-//!   the distance to the true marginals sometimes growing again with more.
+//!   overlap, hence an approximation. By default there is no convergence check: a handful of
+//!   rounds is meant to run inside the search, and Pesant observes that a few rounds capture most
+//!   of the benefit, the distance to the true marginals sometimes growing again with more. A
+//!   tolerance stops earlier when the marginals have settled; it does not make them more exact,
+//!   since a fixed point of loopy BP is still an approximation.
+//! - **No damping.** Messages are not blended with those of the round before. Pesant (\[1\],
+//!   Section 6.4) tried damping exponents on the product of messages and found no consistent
+//!   benefit, so the usual message passing equations are kept.
 //! - **Numerics.** Products are accumulated as sums of logarithms, with `safe_ln` mapping a zero
 //!   to a very small number. A constraint with no solution of positive weight under the current
 //!   labels has no evidence to give and sends a uniform message (`normalize_or_uniform`).
@@ -153,6 +173,54 @@ use crate::modelling::ValueIndex;
 
 /// Stand-in for `ln(0)`: about the smallest log of a positive `f64`, so sums of logs stay finite.
 const LOG_ZERO: f64 = -745.0;
+
+/// How many rounds belief propagation runs: at most `max`, and fewer once the marginals have
+/// settled to within `tolerance` (see the module documentation, *When to stop*).
+///
+/// A plain number of rounds converts into one with no tolerance, which runs exactly that many:
+///
+/// ```
+/// use aicad::bp::BpRounds;
+/// assert_eq!(BpRounds::from(5), BpRounds::fixed(5));
+/// assert_eq!(BpRounds::until_converged(20, 1e-3).max, 20);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BpRounds {
+    /// The most rounds to run.
+    pub max: usize,
+    /// Stops after a round in which no marginal moved by this much or more, in total variation
+    /// distance. Zero never stops early.
+    pub tolerance: f64,
+}
+
+impl BpRounds {
+    /// Exactly `rounds` rounds.
+    pub fn fixed(rounds: usize) -> Self {
+        Self {
+            max: rounds,
+            tolerance: 0.0,
+        }
+    }
+
+    /// Rounds until no marginal moves by `tolerance` or more in a round, and at most `max`.
+    ///
+    /// # Panics
+    ///
+    /// If `tolerance` is negative or not finite.
+    pub fn until_converged(max: usize, tolerance: f64) -> Self {
+        assert!(
+            tolerance.is_finite() && tolerance >= 0.0,
+            "the tolerance of belief propagation must be finite and non-negative, got {tolerance}"
+        );
+        Self { max, tolerance }
+    }
+}
+
+impl From<usize> for BpRounds {
+    fn from(rounds: usize) -> Self {
+        Self::fixed(rounds)
+    }
+}
 
 /// `ln(p)`, or `LOG_ZERO` when `p` is not positive.
 fn safe_ln(p: f64) -> f64 {
@@ -287,7 +355,8 @@ fn cavity_message(marginal: &[f64], local_belief: &[f64]) -> Vec<f64> {
     normalize_or_uniform(weights, marginal.len())
 }
 
-/// Runs the belief propagation over the `mdds` and the priors `probs` for `iterations` steps.
+/// Runs the belief propagation over the `mdds` and the priors `probs` for `rounds` rounds: a number
+/// of rounds, or a [`BpRounds`] that may stop earlier once the marginals have settled.
 /// The current assignment and the decided values are given as parameter to generate one-hot
 /// distributions for these variables.
 ///
@@ -308,13 +377,13 @@ pub fn belief_propagation(
     probs: &[Vec<f64>],
     assignment: &[ValueIndex],
     decided: &[bool],
-    iterations: usize,
+    rounds: impl Into<BpRounds>,
 ) -> Vec<Vec<f64>> {
-    propagate(mdds, probs, assignment, decided, iterations).0
+    propagate(mdds, probs, assignment, decided, rounds.into()).marginals
 }
 
-/// What the other constraints say about each variable of each MDD, after `iterations` rounds of
-/// belief propagation: the *cavity factors* that tilt the prior into the labels of the MDD.
+/// What the other constraints say about each variable of each MDD, after `rounds` rounds of
+/// belief propagation (a number, or a [`BpRounds`]): the *cavity factors* that tilt the prior into the labels of the MDD.
 ///
 /// Returned as `factors[mdd_index][layer]`, a distribution over the domain of the variable of
 /// that layer, proportional to $\prod_{c^\prime \neq c} \mu_{c^\prime \to x}$ for the MDD $c$ and
@@ -335,9 +404,9 @@ pub fn cavity_factors(
     probs: &[Vec<f64>],
     assignment: &[ValueIndex],
     decided: &[bool],
-    iterations: usize,
+    rounds: impl Into<BpRounds>,
 ) -> Vec<Vec<Vec<f64>>> {
-    let (_, local_beliefs) = propagate(mdds, probs, assignment, decided, iterations);
+    let local_beliefs = propagate(mdds, probs, assignment, decided, rounds.into()).local_beliefs;
     let var_to_mdds = build_var_to_mdds(mdds, probs.len());
     mdds.iter()
         .enumerate()
@@ -365,15 +434,31 @@ pub fn cavity_factors(
         .collect()
 }
 
-/// The belief propagation itself: the marginals, and the local beliefs of the constraints at the
-/// last round (all ones if there was none), from which the cavity messages are made.
+/// Total variation distance between two distributions over the same values.
+fn total_variation(a: &[f64], b: &[f64]) -> f64 {
+    0.5 * a.iter().zip(b).map(|(x, y)| (x - y).abs()).sum::<f64>()
+}
+
+/// What [`propagate`] computes.
+struct Propagated {
+    /// The marginal of each variable after the last round.
+    marginals: Vec<Vec<f64>>,
+    /// The local beliefs of the constraints at the last round (all ones if there was none), from
+    /// which the cavity messages are made.
+    local_beliefs: Vec<Vec<Vec<f64>>>,
+    /// How many rounds ran: `rounds.max`, or fewer if the marginals settled first.
+    #[cfg_attr(not(test), allow(dead_code))]
+    rounds_run: usize,
+}
+
+/// The belief propagation itself.
 fn propagate(
     mdds: &[CompiledConstraint],
     probs: &[Vec<f64>],
     assignment: &[ValueIndex],
     decided: &[bool],
-    iterations: usize,
-) -> (Vec<Vec<f64>>, Vec<Vec<Vec<f64>>>) {
+    rounds: BpRounds,
+) -> Propagated {
     let num_vars = probs.len();
     check_inputs(mdds, probs, assignment, decided);
     let var_to_mdds = build_var_to_mdds(mdds, num_vars);
@@ -415,7 +500,9 @@ fn propagate(
 
     let mut marginal: Vec<Vec<f64>> = priors.clone();
 
-    for _ in 0..iterations {
+    let mut rounds_run = 0;
+    for _ in 0..rounds.max {
+        rounds_run += 1;
         // Every constraint computes its local beliefs for every variable in its scope from this
         // round's messages, in one combined forward-backward pass each.
         for (mdd_index, mdd) in mdds.iter().enumerate() {
@@ -438,11 +525,17 @@ fn propagate(
                 }
             }
         }
-        // Updates the marginals for the variables.
-        marginal = log_marginal
+        // Updates the marginals for the variables, noting how far the largest one moved.
+        let updated: Vec<Vec<f64>> = log_marginal
             .into_iter()
             .map(log_combine_and_normalize)
             .collect();
+        let largest_change = updated
+            .iter()
+            .zip(&marginal)
+            .map(|(new, old)| total_variation(new, old))
+            .fold(0.0, f64::max);
+        marginal = updated;
 
         // Re-weight the MDDs' edges with the new marginals.
         for var in 0..num_vars {
@@ -454,9 +547,18 @@ fn propagate(
                 };
             }
         }
+
+        // Strictly below: a tolerance of zero never stops early.
+        if largest_change < rounds.tolerance {
+            break;
+        }
     }
 
-    (marginal, local_beliefs)
+    Propagated {
+        marginals: marginal,
+        local_beliefs,
+        rounds_run,
+    }
 }
 
 #[cfg(test)]
@@ -537,6 +639,72 @@ mod tests {
         let decided = vec![false; 2];
         let marginals = belief_propagation(&mdds, &probs, &assignment, &decided, 0);
         assert_eq!(marginals, probs);
+    }
+
+    #[test]
+    fn a_tolerance_stops_once_the_marginals_settle() {
+        // One constraint: the first round gives the exact marginals and the second changes
+        // nothing, so a tolerance stops after it, with the marginals of a single round. Without a
+        // tolerance every round runs.
+        let (mdds, _) = not_equals_inputs();
+        let probs = vec![vec![0.9, 0.1], vec![0.3, 0.7]];
+        let assignment = vec![ValueIndex(0); 2];
+        let decided = vec![false; 2];
+        let run = |rounds: BpRounds| propagate(&mdds, &probs, &assignment, &decided, rounds);
+
+        let settled = run(BpRounds::until_converged(10, 1e-12));
+        assert_eq!(settled.rounds_run, 2);
+        for (a, b) in settled
+            .marginals
+            .iter()
+            .flatten()
+            .zip(run(BpRounds::fixed(1)).marginals.iter().flatten())
+        {
+            assert!((a - b).abs() < 1e-12, "{a} != {b}");
+        }
+        assert_eq!(run(BpRounds::fixed(10)).rounds_run, 10);
+        assert_eq!(run(BpRounds::until_converged(10, 0.0)).rounds_run, 10);
+    }
+
+    #[test]
+    fn stopping_early_gives_the_marginals_of_the_rounds_that_ran() {
+        // A loop: x != y, y != z, x != z over three values. Whenever the tolerance stops it, the
+        // result is that of running that many rounds, and no more than the most rounds run.
+        let mut problem = Problem::default();
+        let vars = problem.add_variables(3, vec![0, 1, 2]);
+        not_equals(&mut problem, vars[0], vars[1]);
+        not_equals(&mut problem, vars[1], vars[2]);
+        not_equals(&mut problem, vars[0], vars[2]);
+        let problem = Arc::new(problem);
+        let mdds: Vec<CompiledConstraint> = problem
+            .iter_constraints()
+            .map(|c| build_mdd(problem.clone(), &[c]))
+            .collect();
+        let probs = vec![
+            vec![0.6, 0.3, 0.1],
+            vec![0.5, 0.2, 0.3],
+            vec![0.2, 0.2, 0.6],
+        ];
+        let assignment = vec![ValueIndex(0); 3];
+        let decided = vec![false; 3];
+        for tolerance in [1e-2, 1e-4, 1e-8] {
+            let early = propagate(
+                &mdds,
+                &probs,
+                &assignment,
+                &decided,
+                BpRounds::until_converged(50, tolerance),
+            );
+            assert!(early.rounds_run >= 1 && early.rounds_run <= 50);
+            let fixed = belief_propagation(&mdds, &probs, &assignment, &decided, early.rounds_run);
+            assert_eq!(early.marginals, fixed, "tolerance={tolerance}");
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "tolerance of belief propagation")]
+    fn a_negative_tolerance_panics() {
+        let _ = BpRounds::until_converged(5, -1e-3);
     }
 
     #[test]

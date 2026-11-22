@@ -83,7 +83,9 @@ by `bp_rounds` rounds of belief propagation (0 by default: the predictions are s
 the same ones `NeuralPriorBPSearch` runs: with `bp_rounds > 0` each constraint scores the network's
 predictions tilted by what the *other* constraints say about each variable, so the loss is not
 blind to them. The rounds are not differentiated through: the gradient is
-taken with respect to the predictions, the messages being constants.
+taken with respect to the predictions, the messages being constants. With `bp_tolerance > 0`,
+`bp_rounds` is the most rounds: belief propagation stops once no marginal moves by `bp_tolerance` in a
+round, as `bp_tolerance` does for `NeuralPriorBPSearch` and `BeliefPropagationSearch`.
 
 The predictions are the softmax of the network's logits after Gumbel noise, as in ConsFormer.
 `gumbel_scale` multiplies that noise: 1 (the default) is the Gumbel-softmax relaxation, 0 trains on the

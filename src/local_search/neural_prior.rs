@@ -48,6 +48,7 @@ use super::{
     LocalSearch, SearchArchitecture, SearchConfig, SearchState, SolveConfig, destroy_rows,
     row_seeds, run_batched,
 };
+use crate::bp::BpRounds;
 
 /// The settings of the NeuralPrior local search, which decodes the logits of the network.
 #[derive(Debug, Clone)]
@@ -83,8 +84,12 @@ pub struct NeuralPriorBpSearchConfig {
     pub destroy_fraction: f64,
     /// Sample values from the refined marginals instead of taking the most likely one.
     pub stochastic: bool,
-    /// Number of belief-propagation rounds per iteration.
+    /// Number of belief-propagation rounds per iteration: the most, if `bp_tolerance` is positive.
     pub bp_iterations: usize,
+    /// Stops belief propagation before `bp_iterations` rounds once no marginal moves by this much
+    /// in a round, in total variation distance (see [`crate::bp::BpRounds`]). Zero, the default,
+    /// runs every round.
+    pub bp_tolerance: f64,
 }
 
 impl Default for NeuralPriorBpSearchConfig {
@@ -94,6 +99,7 @@ impl Default for NeuralPriorBpSearchConfig {
             destroy_fraction: 1.0,
             stochastic: false,
             bp_iterations: 1,
+            bp_tolerance: 0.0,
         }
     }
 }
@@ -305,7 +311,7 @@ pub struct NeuralPriorBpSearch<B: Backend, Ba, N> {
     /// The network and destroy operator.
     core: Core<B, Ba, N>,
     /// Number of belief-propagation rounds per iteration.
-    bp_iterations: usize,
+    bp_rounds: BpRounds,
     /// How a value is taken from a marginal.
     mode: DecodeMode,
 }
@@ -326,7 +332,7 @@ where
                 device,
                 batch: PhantomData,
             },
-            bp_iterations: config.bp_iterations,
+            bp_rounds: BpRounds::until_converged(config.bp_iterations, config.bp_tolerance),
             mode: if config.stochastic {
                 DecodeMode::Sample
             } else {
@@ -349,7 +355,7 @@ where
             MddCompilationConfig::default(),
             MddRepair::domain_size_covering(problems),
             self.mode,
-            self.bp_iterations,
+            self.bp_rounds,
         );
         Ok(Box::new(NeuralPriorBpState {
             search: self,

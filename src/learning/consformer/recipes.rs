@@ -149,6 +149,7 @@ pub fn train_consformer_mdd(
     destroy: Option<Arc<dyn DestroyOperator>>,
     compilation: MddCompilationConfig,
     bp_rounds: usize,
+    bp_tolerance: f64,
     gumbel_scale: f32,
     checkpoint_dir: &Path,
 ) -> Result<(), String> {
@@ -162,6 +163,7 @@ pub fn train_consformer_mdd(
         destroy,
         compilation,
         bp_rounds,
+        bp_tolerance,
         gumbel_scale,
         checkpoint_dir,
     )
@@ -178,14 +180,16 @@ pub fn train_consformer_mdd(
 /// number of rounds of belief propagation that label the diagrams before the loss is computed:
 /// with zero the diagrams are labelled with the probabilities of the network themselves, with more
 /// the loss also sees what the other constraints say about each variable (see
-/// [`DecomposedMddLoss`]). `gumbel_scale` multiplies the Gumbel noise added to the network's logits
+/// [`DecomposedMddLoss`]); with a positive `bp_tolerance` they stop earlier, once no marginal moves by
+/// that much in a round (see [`crate::bp::BpRounds`]), and zero runs all `bp_rounds`. `gumbel_scale` multiplies the Gumbel noise added to the network's logits
 /// before their softmax: `1.0` is the Gumbel-softmax relaxation of ConsFormer, `0.0` trains on the
 /// plain softmax, without noise (the validation loss, used to keep the best network, is then
 /// deterministic too).
 ///
 /// # Errors
 ///
-/// If `gumbel_scale` is negative or not finite, or if the checkpoint directory cannot be prepared.
+/// If `bp_tolerance` or `gumbel_scale` is negative or not finite, or if the checkpoint directory
+/// cannot be prepared.
 #[allow(clippy::too_many_arguments)]
 pub fn train_consformer_mdd_on<B: AutodiffBackend>(
     device: B::Device,
@@ -196,9 +200,16 @@ pub fn train_consformer_mdd_on<B: AutodiffBackend>(
     destroy: Option<Arc<dyn DestroyOperator>>,
     compilation: MddCompilationConfig,
     bp_rounds: usize,
+    bp_tolerance: f64,
     gumbel_scale: f32,
     checkpoint_dir: &Path,
 ) -> Result<(), String> {
+    if !bp_tolerance.is_finite() || bp_tolerance < 0.0 {
+        return Err(format!(
+            "the tolerance of belief propagation must be finite and non-negative, got \
+             {bp_tolerance}"
+        ));
+    }
     if !gumbel_scale.is_finite() || gumbel_scale < 0.0 {
         return Err(format!(
             "the Gumbel scale must be finite and non-negative, got {gumbel_scale}"
@@ -210,6 +221,7 @@ pub fn train_consformer_mdd_on<B: AutodiffBackend>(
         split_train_validation(problems, validation);
     let loss = DecomposedMddLoss::new(compilation, network_config.domain_size)
         .with_bp_rounds(bp_rounds)
+        .with_bp_tolerance(bp_tolerance)
         .with_gumbel_scale(gumbel_scale)
         .with_infeasible_constraints_skipped(destroy.is_some());
     let train_dataset = ConsFormerDataset::<B>::new(problems, &device);

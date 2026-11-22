@@ -181,6 +181,34 @@ def test_fit_with_the_mdd_loss_for_any_number_of_bp_rounds(tmp_path, bp_rounds):
     assert ckpt.domain_size == 3
 
 
+def test_bp_tolerance_is_a_recipe_setting_of_the_mdd_loss():
+    r = Recipe.named("consformer-mdd")
+    assert r.bp_tolerance == 0.0
+    assert r.replace(bp_tolerance=1e-3).bp_tolerance == 1e-3
+    for bad in (-1e-3, float("nan"), float("inf"), "1", True):
+        with pytest.raises(ValueError):
+            r.replace(bp_tolerance=bad)
+
+
+@needs_learning
+def test_fit_with_the_mdd_loss_and_a_bp_tolerance(tmp_path):
+    ckpt = learning.fit(
+        Dataset.split(problems(8), 0.25, seed=0),
+        "consformer-mdd",
+        checkpoint_dir=tmp_path / "ckpt",
+        seed=0,
+        epochs=2,
+        batch_size=2,
+        validation_interval=1,
+        embedding_size=16,
+        hidden_size=16,
+        expand_size=16,
+        bp_rounds=20,
+        bp_tolerance=1e-3,
+    )
+    assert ckpt.domain_size == 3
+
+
 @needs_learning
 @pytest.mark.parametrize("bp_rounds", [0, 2])
 def test_fit_with_the_mdd_loss_and_a_destroy_operator(tmp_path, bp_rounds):

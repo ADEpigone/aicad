@@ -32,7 +32,7 @@ use rand::SeedableRng;
 use rand::rngs::StdRng;
 use rayon::prelude::*;
 
-use crate::bp::belief_propagation;
+use crate::bp::{BpRounds, belief_propagation};
 use crate::mdd::arena::{MddCompilationConfig, compile_constraints};
 use crate::mdd::{CompiledConstraint, MddArena};
 use crate::modelling::{Problem, ValueIndex, VariableIndex};
@@ -55,7 +55,7 @@ pub struct MddRepair {
     /// How a value is taken from a marginal.
     mode: DecodeMode,
     /// Rounds of belief propagation per repair.
-    bp_iterations: usize,
+    bp_rounds: BpRounds,
 }
 
 impl MddRepair {
@@ -66,13 +66,13 @@ impl MddRepair {
         compilation: MddCompilationConfig,
         domain_size: usize,
         mode: DecodeMode,
-        bp_iterations: usize,
+        bp_rounds: impl Into<BpRounds>,
     ) -> Self {
         Self {
             compilation,
             domain_size,
             mode,
-            bp_iterations,
+            bp_rounds: bp_rounds.into(),
         }
     }
 
@@ -213,8 +213,7 @@ impl MddRepair {
             probs.push(probs_v);
         }
 
-        let marginals =
-            belief_propagation(compiled, &probs, &assignment, &decided, self.bp_iterations);
+        let marginals = belief_propagation(compiled, &probs, &assignment, &decided, self.bp_rounds);
 
         let mut next = current.to_vec();
         for &v in free {

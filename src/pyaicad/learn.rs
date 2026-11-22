@@ -221,7 +221,8 @@ pub(crate) fn train_consformer(
 /// recipe always refines to an exact, unbounded-width MDD, and `merge` only ever triggers once a
 /// width bound would be exceeded; see `MddCompilationConfig`'s doc). `bp_rounds` is the number of
 /// rounds of belief propagation that label each constraint's MDD before the loss is computed
-/// (0: the probabilities of the network as they are). `gumbel_scale` multiplies the Gumbel noise
+/// (0: the probabilities of the network as they are), fewer once no marginal moves by `bp_tolerance`
+/// in a round (0: every round runs). `gumbel_scale` multiplies the Gumbel noise
 /// added to the network's logits before their softmax (1: the Gumbel-softmax relaxation of
 /// ConsFormer; 0: no noise). `training.destroy_kind` picks the variables re-predicted in a
 /// training sample, as in `train_consformer`: `Random` (the default) a random `mask_fraction` of
@@ -237,6 +238,7 @@ pub(crate) fn train_consformer(
         pyselect=PySelectHeuristic::Greedy,
         validation=None,
         bp_rounds=0,
+        bp_tolerance=0.0,
         gumbel_scale=1.0))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn train_consformer_mdd(
@@ -250,6 +252,7 @@ pub(crate) fn train_consformer_mdd(
     pyselect: PySelectHeuristic,
     validation: Option<Vec<PyRef<PyProblem>>>,
     bp_rounds: usize,
+    bp_tolerance: f64,
     gumbel_scale: f32,
 ) -> PyResult<()> {
     let problems: Vec<Arc<Problem>> = problems.iter().map(|p| p.arc()).collect();
@@ -286,6 +289,7 @@ pub(crate) fn train_consformer_mdd(
             destroy,
             compilation,
             bp_rounds,
+            bp_tolerance,
             gumbel_scale,
             &checkpoint_dir,
         )

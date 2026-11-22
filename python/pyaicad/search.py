@@ -103,6 +103,17 @@ def _check_search(destroy: str, destroy_fraction: float, batch_size: Optional[in
         raise ValueError(f"batch_size must be at least 1, got {batch_size!r}")
 
 
+def _check_tolerance(tolerance: float) -> None:
+    """The tolerance that stops belief propagation once the marginals settle."""
+    if (
+        isinstance(tolerance, bool)
+        or not isinstance(tolerance, (int, float))
+        or not math.isfinite(tolerance)
+        or tolerance < 0
+    ):
+        raise ValueError(f"bp_tolerance must be a non-negative number, got {tolerance!r}")
+
+
 class _LocalSearch:
     """What the searches share: they repeatedly destroy part of the current assignment and repair
     it, many problems of a :func:`local_search` call running together as batches.
@@ -222,7 +233,11 @@ class NeuralPriorBPSearch(_LocalSearch):
         destroy_fraction: The fraction of the variables repaired at each iteration.
         stochastic: Sample the values from the refined marginals instead of taking the most likely
             ones.
-        bp_iterations: Rounds of belief propagation per iteration.
+        bp_iterations: Rounds of belief propagation per iteration; the most rounds if
+            ``bp_tolerance`` is positive.
+        bp_tolerance: Stops belief propagation before ``bp_iterations`` rounds once no marginal
+            moves by this much in a round, in total variation distance. ``0.0``, the default,
+            runs every round.
         batch_size: How many problems are stepped together on the device; see
             :class:`NeuralPriorSearch`.
     """
@@ -232,6 +247,7 @@ class NeuralPriorBPSearch(_LocalSearch):
     destroy_fraction: float = 1.0
     stochastic: bool = False
     bp_iterations: int = 1
+    bp_tolerance: float = 0.0
     batch_size: Optional[int] = None
 
     name = "neural-prior-bp"
@@ -241,6 +257,7 @@ class NeuralPriorBPSearch(_LocalSearch):
         _check_search(self.destroy, self.destroy_fraction, self.batch_size)
         if self.bp_iterations < 1:
             raise ValueError("bp_iterations must be at least 1")
+        _check_tolerance(self.bp_tolerance)
 
     def _checkpoint(self) -> Optional[Checkpoint]:
         return _load(self.checkpoint)
@@ -251,6 +268,7 @@ class NeuralPriorBPSearch(_LocalSearch):
             destroy_fraction=self.destroy_fraction,
             stochastic=self.stochastic,
             bp_iterations=self.bp_iterations,
+            bp_tolerance=float(self.bp_tolerance),
         )
 
 
@@ -265,7 +283,11 @@ class BeliefPropagationSearch(_LocalSearch):
         destroy_fraction: The fraction of the variables repaired at each iteration.
         stochastic: Sample the values from the marginals instead of taking the most likely ones.
             Uniform probabilities tie everywhere, so this is what lets the search move.
-        bp_iterations: Rounds of belief propagation per iteration.
+        bp_iterations: Rounds of belief propagation per iteration; the most rounds if
+            ``bp_tolerance`` is positive.
+        bp_tolerance: Stops belief propagation before ``bp_iterations`` rounds once no marginal
+            moves by this much in a round, in total variation distance. ``0.0``, the default,
+            runs every round.
         batch_size: How many problems are stepped together; see :class:`NeuralPriorSearch`.
     """
 
@@ -273,6 +295,7 @@ class BeliefPropagationSearch(_LocalSearch):
     destroy_fraction: float = 1.0
     stochastic: bool = True
     bp_iterations: int = 1
+    bp_tolerance: float = 0.0
     batch_size: Optional[int] = None
 
     name = "bp"
@@ -281,6 +304,7 @@ class BeliefPropagationSearch(_LocalSearch):
         _check_search(self.destroy, self.destroy_fraction, self.batch_size)
         if self.bp_iterations < 1:
             raise ValueError("bp_iterations must be at least 1")
+        _check_tolerance(self.bp_tolerance)
 
     def _search(self) -> Any:
         return _core.PySearch.BeliefPropagation(
@@ -288,6 +312,7 @@ class BeliefPropagationSearch(_LocalSearch):
             destroy_fraction=self.destroy_fraction,
             stochastic=self.stochastic,
             bp_iterations=self.bp_iterations,
+            bp_tolerance=float(self.bp_tolerance),
         )
 
 

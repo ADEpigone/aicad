@@ -47,6 +47,11 @@ def test_search_option_validation(tmp_path):
         ac.NeuralPriorSearch(tmp_path, destroy="nope")
     with pytest.raises(ValueError):
         ac.NeuralPriorBPSearch(tmp_path, bp_iterations=0)
+    for bad in (-1e-3, float("nan"), True):
+        with pytest.raises(ValueError):
+            ac.BeliefPropagationSearch(bp_tolerance=bad)
+        with pytest.raises(ValueError):
+            ac.NeuralPriorBPSearch(tmp_path, bp_tolerance=bad)
     # A search has the settings of its architecture and no other.
     with pytest.raises(TypeError):
         ac.BeliefPropagationSearch(checkpoint=tmp_path)
@@ -68,13 +73,15 @@ def test_a_consformer_search_needs_a_checkpoint(tmp_path):
         ac.local_search(latin(), ac.NeuralPriorBPSearch(tmp_path))
 
 
-def test_belief_propagation_search_solves():
+@pytest.mark.parametrize("bp_tolerance", [0.0, 1e-3])
+def test_belief_propagation_search_solves(bp_tolerance):
     models = [latin(4) for _ in range(3)]
     search = ac.BeliefPropagationSearch(
         destroy="related",
         destroy_fraction=0.5,
         stochastic=True,
         bp_iterations=3,
+        bp_tolerance=bp_tolerance,
     )
     results = ac.local_search(models, search, Limits(iterations=500), seed=0)
     assert len(results) == 3
