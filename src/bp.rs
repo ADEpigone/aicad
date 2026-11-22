@@ -222,6 +222,93 @@ impl From<usize> for BpRounds {
     }
 }
 
+/// Summary of how many rounds a series of belief propagation calls ran: their number, mean,
+/// standard deviation, smallest and largest. Filled with [`record`](Self::record), combined with
+/// [`merge`](Self::merge). With a tolerance (see [`BpRounds`]) it shows how soon the marginals
+/// settle; without, every call runs the most rounds.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct RoundsStats {
+    /// Number of calls recorded.
+    count: u64,
+    /// Sum of their rounds.
+    sum: f64,
+    /// Sum of the squares of their rounds.
+    sum_squares: f64,
+    /// Fewest rounds of a call, meaningful once `count > 0`.
+    min: usize,
+    /// Most rounds of a call, meaningful once `count > 0`.
+    max: usize,
+}
+
+impl RoundsStats {
+    /// Records one call that ran `rounds` rounds.
+    pub fn record(&mut self, rounds: usize) {
+        self.min = if self.count == 0 {
+            rounds
+        } else {
+            self.min.min(rounds)
+        };
+        self.max = if self.count == 0 {
+            rounds
+        } else {
+            self.max.max(rounds)
+        };
+        self.count += 1;
+        self.sum += rounds as f64;
+        self.sum_squares += (rounds as f64) * (rounds as f64);
+    }
+
+    /// Adds the calls recorded in `other`.
+    pub fn merge(&mut self, other: &RoundsStats) {
+        if other.count == 0 {
+            return;
+        }
+        self.min = if self.count == 0 {
+            other.min
+        } else {
+            self.min.min(other.min)
+        };
+        self.max = if self.count == 0 {
+            other.max
+        } else {
+            self.max.max(other.max)
+        };
+        self.count += other.count;
+        self.sum += other.sum;
+        self.sum_squares += other.sum_squares;
+    }
+
+    /// Number of calls recorded.
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+
+    /// Mean rounds per call, `None` if none was recorded.
+    pub fn mean(&self) -> Option<f64> {
+        (self.count > 0).then(|| self.sum / self.count as f64)
+    }
+
+    /// Standard deviation of the rounds per call (of the recorded calls, not an estimate for a
+    /// larger population), `None` if none was recorded.
+    pub fn std(&self) -> Option<f64> {
+        self.mean().map(|mean| {
+            (self.sum_squares / self.count as f64 - mean * mean)
+                .max(0.0)
+                .sqrt()
+        })
+    }
+
+    /// Fewest rounds of a call, `None` if none was recorded.
+    pub fn min(&self) -> Option<usize> {
+        (self.count > 0).then_some(self.min)
+    }
+
+    /// Most rounds of a call, `None` if none was recorded.
+    pub fn max(&self) -> Option<usize> {
+        (self.count > 0).then_some(self.max)
+    }
+}
+
 /// `ln(p)`, or `LOG_ZERO` when `p` is not positive.
 fn safe_ln(p: f64) -> f64 {
     if p > 0.0 { p.ln() } else { LOG_ZERO }
@@ -379,7 +466,24 @@ pub fn belief_propagation(
     decided: &[bool],
     rounds: impl Into<BpRounds>,
 ) -> Vec<Vec<f64>> {
-    propagate(mdds, probs, assignment, decided, rounds.into()).marginals
+    belief_propagation_with_rounds(mdds, probs, assignment, decided, rounds).0
+}
+
+/// [`belief_propagation`], and the number of rounds that ran: the most rounds of `rounds`, or
+/// fewer if the marginals settled first.
+///
+/// # Panics
+///
+/// Under the same conditions as [`belief_propagation`].
+pub fn belief_propagation_with_rounds(
+    mdds: &[CompiledConstraint],
+    probs: &[Vec<f64>],
+    assignment: &[ValueIndex],
+    decided: &[bool],
+    rounds: impl Into<BpRounds>,
+) -> (Vec<Vec<f64>>, usize) {
+    let propagated = propagate(mdds, probs, assignment, decided, rounds.into());
+    (propagated.marginals, propagated.rounds_run)
 }
 
 /// What the other constraints say about each variable of each MDD, after `rounds` rounds of
@@ -406,9 +510,30 @@ pub fn cavity_factors(
     decided: &[bool],
     rounds: impl Into<BpRounds>,
 ) -> Vec<Vec<Vec<f64>>> {
-    let local_beliefs = propagate(mdds, probs, assignment, decided, rounds.into()).local_beliefs;
+    cavity_factors_with_rounds(mdds, probs, assignment, decided, rounds).0
+}
+
+/// [`cavity_factors`], and the number of rounds that ran: the most rounds of `rounds`, or fewer if
+/// the marginals settled first.
+///
+/// # Panics
+///
+/// Under the same conditions as [`belief_propagation`].
+pub fn cavity_factors_with_rounds(
+    mdds: &[CompiledConstraint],
+    probs: &[Vec<f64>],
+    assignment: &[ValueIndex],
+    decided: &[bool],
+    rounds: impl Into<BpRounds>,
+) -> (Vec<Vec<Vec<f64>>>, usize) {
+    let Propagated {
+        local_beliefs,
+        rounds_run,
+        ..
+    } = propagate(mdds, probs, assignment, decided, rounds.into());
     let var_to_mdds = build_var_to_mdds(mdds, probs.len());
-    mdds.iter()
+    let factors = mdds
+        .iter()
         .enumerate()
         .map(|(mdd_index, mdd)| {
             (0..mdd.number_decisions())
@@ -431,7 +556,8 @@ pub fn cavity_factors(
                 })
                 .collect()
         })
-        .collect()
+        .collect();
+    (factors, rounds_run)
 }
 
 /// Total variation distance between two distributions over the same values.
@@ -447,7 +573,6 @@ struct Propagated {
     /// which the cavity messages are made.
     local_beliefs: Vec<Vec<Vec<f64>>>,
     /// How many rounds ran: `rounds.max`, or fewer if the marginals settled first.
-    #[cfg_attr(not(test), allow(dead_code))]
     rounds_run: usize,
 }
 
@@ -699,6 +824,48 @@ mod tests {
             let fixed = belief_propagation(&mdds, &probs, &assignment, &decided, early.rounds_run);
             assert_eq!(early.marginals, fixed, "tolerance={tolerance}");
         }
+    }
+
+    #[test]
+    fn rounds_stats_summarise_the_recorded_calls() {
+        let mut stats = RoundsStats::default();
+        assert_eq!((stats.mean(), stats.std(), stats.min()), (None, None, None));
+        for rounds in [2, 4, 4, 4, 5, 5, 7, 9] {
+            stats.record(rounds);
+        }
+        assert_eq!(stats.count(), 8);
+        assert_eq!(stats.mean(), Some(5.0));
+        assert!((stats.std().unwrap() - 2.0).abs() < 1e-12);
+        assert_eq!((stats.min(), stats.max()), (Some(2), Some(9)));
+
+        let mut merged = RoundsStats::default();
+        let mut other = RoundsStats::default();
+        for rounds in [2, 4, 4, 4] {
+            merged.record(rounds);
+        }
+        for rounds in [5, 5, 7, 9] {
+            other.record(rounds);
+        }
+        merged.merge(&other);
+        merged.merge(&RoundsStats::default());
+        assert_eq!(merged, stats);
+    }
+
+    #[test]
+    fn the_number_of_rounds_run_is_returned() {
+        let (mdds, probs) = not_equals_inputs();
+        let assignment = vec![ValueIndex(0); 2];
+        let decided = vec![false; 2];
+        let (_, rounds) = belief_propagation_with_rounds(&mdds, &probs, &assignment, &decided, 4);
+        assert_eq!(rounds, 4);
+        let (_, rounds) = cavity_factors_with_rounds(
+            &mdds,
+            &probs,
+            &assignment,
+            &decided,
+            BpRounds::until_converged(10, 1e-9),
+        );
+        assert!(rounds < 10);
     }
 
     #[test]

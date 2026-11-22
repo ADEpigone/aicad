@@ -35,4 +35,11 @@ pub trait Loss<B: Backend, Ba: Batch<B>> {
 
     /// The loss of `batch` for the network output `logits`, a scalar.
     fn loss(&self, logits: Tensor<B, 3>, batch: &Ba) -> Tensor<B, 1>;
+
+    /// The rounds of belief propagation the loss ran per sample since the last call, which it
+    /// forgets: the training loop logs them once per epoch, and once per validation. Empty by
+    /// default, for a loss without belief propagation.
+    fn take_bp_rounds(&self) -> crate::bp::RoundsStats {
+        crate::bp::RoundsStats::default()
+    }
 }

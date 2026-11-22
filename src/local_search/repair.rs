@@ -32,7 +32,7 @@ use rand::SeedableRng;
 use rand::rngs::StdRng;
 use rayon::prelude::*;
 
-use crate::bp::{BpRounds, belief_propagation};
+use crate::bp::{BpRounds, RoundsStats, belief_propagation_with_rounds};
 use crate::mdd::arena::{MddCompilationConfig, compile_constraints};
 use crate::mdd::{CompiledConstraint, MddArena};
 use crate::modelling::{Problem, ValueIndex, VariableIndex};
@@ -165,7 +165,8 @@ impl MddRepair {
     /// `rng` makes the sampling of a stochastic repair reproducible: each row should get its own,
     /// seeded before the rows are repaired in parallel.
     ///
-    /// Returns `current` unchanged when nothing is free, which needs no `compiled`.
+    /// Returns `current` unchanged when nothing is free, which needs no `compiled`. Also returns the
+    /// number of rounds belief propagation ran, `None` when nothing was free and it did not run.
     pub fn repair(
         &self,
         problem: &Problem,
@@ -174,9 +175,9 @@ impl MddRepair {
         free: &[usize],
         rng: &mut StdRng,
         probability: impl Fn(usize, usize) -> f64,
-    ) -> Vec<isize> {
+    ) -> (Vec<isize>, Option<usize>) {
         if free.is_empty() {
-            return current.to_vec();
+            return (current.to_vec(), None);
         }
         let compiled =
             compiled.expect("the MDD repair needs its problems prepared before it repairs them");
@@ -213,7 +214,8 @@ impl MddRepair {
             probs.push(probs_v);
         }
 
-        let marginals = belief_propagation(compiled, &probs, &assignment, &decided, self.bp_rounds);
+        let (marginals, rounds_run) =
+            belief_propagation_with_rounds(compiled, &probs, &assignment, &decided, self.bp_rounds);
 
         let mut next = current.to_vec();
         for &v in free {
@@ -226,7 +228,7 @@ impl MddRepair {
             };
             next[v] = chosen as isize;
         }
-        next
+        (next, Some(rounds_run))
     }
 }
 
@@ -237,27 +239,33 @@ pub struct BatchRepair {
     repair: MddRepair,
     /// What was compiled for each row, `None` once the row is solved.
     compiled: Vec<Option<Compiled>>,
+    /// The rounds of belief propagation of the repairs of each row so far.
+    rounds: Vec<RoundsStats>,
 }
 
 impl BatchRepair {
     /// Compiles the constraints of `problems`, one row each.
     pub fn new(repair: MddRepair, problems: &[Arc<Problem>]) -> Self {
         let compiled = repair.prepare(problems).into_iter().map(Some).collect();
-        Self { repair, compiled }
+        Self {
+            repair,
+            compiled,
+            rounds: vec![RoundsStats::default(); problems.len()],
+        }
     }
 
     /// Repairs, in parallel, the variables each row of `destroyed` frees, in `assignments`.
     /// `seeds` holds one seed per row for its sampling, and `probability(row, variable, value)`
     /// the probability of a raw value for a variable of a row.
     pub fn repair_rows(
-        &self,
+        &mut self,
         problems: &[Arc<Problem>],
         assignments: &mut [Vec<isize>],
         destroyed: &[Vec<usize>],
         seeds: &[u64],
         probability: impl Fn(usize, usize, usize) -> f64 + Sync,
     ) {
-        let next: Vec<Vec<isize>> = crate::utils::worker_pool().install(|| {
+        let next: Vec<(Vec<isize>, Option<usize>)> = crate::utils::worker_pool().install(|| {
             (0..problems.len())
                 .into_par_iter()
                 .map(|row| {
@@ -273,9 +281,19 @@ impl BatchRepair {
                 })
                 .collect()
         });
-        for (row, values) in assignments.iter_mut().zip(next) {
+        for ((row, stats), (values, rounds)) in
+            assignments.iter_mut().zip(&mut self.rounds).zip(next)
+        {
             *row = values;
+            if let Some(rounds) = rounds {
+                stats.record(rounds);
+            }
         }
+    }
+
+    /// The rounds of belief propagation of the repairs of `row` so far.
+    pub fn bp_rounds(&self, row: usize) -> RoundsStats {
+        self.rounds[row]
     }
 
     /// Frees what was compiled for the rows flagged in `solved`.
@@ -290,6 +308,7 @@ impl BatchRepair {
     /// Drops the rows not flagged in `keep`.
     pub fn retain(&mut self, keep: &[bool]) {
         self.compiled = super::filtered(std::mem::take(&mut self.compiled), keep);
+        self.rounds = super::filtered(std::mem::take(&mut self.rounds), keep);
     }
 }
 
@@ -352,7 +371,7 @@ mod tests {
         let repairer = repairer(3);
         let compiled = repairer.prepare(&problems);
 
-        let next = repairer.repair(
+        let (next, _) = repairer.repair(
             &problems[0],
             Some(&compiled[0]),
             &[0, 1, 2],
@@ -367,7 +386,7 @@ mod tests {
     #[test]
     fn a_row_without_free_position_is_kept_and_needs_no_compiled_state() {
         let problem = clique_problem(3, 3);
-        let next = repairer(3).repair(
+        let (next, _) = repairer(3).repair(
             &problem,
             None,
             &[2, 1, 0],

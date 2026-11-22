@@ -48,7 +48,7 @@ use super::{
     LocalSearch, SearchArchitecture, SearchConfig, SearchState, SolveConfig, destroy_rows,
     row_seeds, run_batched,
 };
-use crate::bp::BpRounds;
+use crate::bp::{BpRounds, RoundsStats};
 
 /// The settings of the NeuralPrior local search, which decodes the logits of the network.
 #[derive(Debug, Clone)]
@@ -417,6 +417,10 @@ where
 
     fn retain(&mut self, keep: &[bool]) {
         self.repair.retain(keep);
+    }
+
+    fn bp_rounds(&self, row: usize) -> RoundsStats {
+        self.repair.bp_rounds(row)
     }
 }
 

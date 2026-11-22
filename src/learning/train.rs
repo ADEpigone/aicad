@@ -226,15 +226,38 @@ where
             log::warn!("Non-finite train loss at epoch {epoch}");
         }
         log::info!("epoch {epoch}: loss = {epoch_loss} ({epoch_rt} seconds)");
-        crate::diagnostics::data_log!(
-            "train_epoch",
-            epoch = epoch,
-            t_forward = t_forward,
-            t_loss = t_loss,
-            t_backward = t_backward,
-            epoch_rt_s = epoch_start.elapsed().as_secs_f64(),
-            epoch_loss = epoch_loss,
-        );
+        let rounds = <L as Loss<B, TBatch>>::take_bp_rounds(&loss_fn);
+        if let (Some(mean), Some(std), Some(min), Some(max)) =
+            (rounds.mean(), rounds.std(), rounds.min(), rounds.max())
+        {
+            log::info!(
+                "epoch {epoch}: belief propagation ran {mean:.2} +- {std:.2} rounds per sample \
+                 (min {min}, max {max})"
+            );
+            crate::diagnostics::data_log!(
+                "train_epoch",
+                epoch = epoch,
+                t_forward = t_forward,
+                t_loss = t_loss,
+                t_backward = t_backward,
+                epoch_rt_s = epoch_start.elapsed().as_secs_f64(),
+                epoch_loss = epoch_loss,
+                bp_rounds_mean = mean,
+                bp_rounds_std = std,
+                bp_rounds_min = min,
+                bp_rounds_max = max,
+            );
+        } else {
+            crate::diagnostics::data_log!(
+                "train_epoch",
+                epoch = epoch,
+                t_forward = t_forward,
+                t_loss = t_loss,
+                t_backward = t_backward,
+                epoch_rt_s = epoch_start.elapsed().as_secs_f64(),
+                epoch_loss = epoch_loss,
+            );
+        }
         epoch_report.print(40);
 
         if (epoch + 1) % training.validation_interval == 0 {
@@ -255,7 +278,22 @@ where
                 log::warn!("Non-finite validation score at epoch {epoch}");
             }
             log::info!("epoch {epoch}: validation loss = {score:.4}");
-            crate::diagnostics::data_log!("valid_epoch", epoch = epoch, score = score,);
+            let rounds = <L as Loss<B, TBatch>>::take_bp_rounds(&loss_fn);
+            if let (Some(mean), Some(std), Some(min), Some(max)) =
+                (rounds.mean(), rounds.std(), rounds.min(), rounds.max())
+            {
+                crate::diagnostics::data_log!(
+                    "valid_epoch",
+                    epoch = epoch,
+                    score = score,
+                    bp_rounds_mean = mean,
+                    bp_rounds_std = std,
+                    bp_rounds_min = min,
+                    bp_rounds_max = max,
+                );
+            } else {
+                crate::diagnostics::data_log!("valid_epoch", epoch = epoch, score = score,);
+            }
 
             let improved = score < best_score - training.early_stopping_min_delta;
 

@@ -343,7 +343,7 @@
 //! compiled once, by [`Loss::prepare`], before training.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use burn::tensor::Tensor;
@@ -352,7 +352,7 @@ use burn::tensor::backend::Backend;
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 
-use crate::bp::{BpRounds, cavity_factors};
+use crate::bp::{BpRounds, RoundsStats, cavity_factors_with_rounds};
 use crate::learning::Loss;
 use crate::mdd::arena::{MddCompilationConfig, compile_constraints};
 use crate::mdd::wmc::log_wmc_and_gradient;
@@ -448,7 +448,7 @@ fn completable(
 /// The cavity factors of every constraint of a sample after `rounds` rounds of belief
 /// propagation from the probabilities of the network, see [`cavity_factors`]. The probabilities
 /// are masked as the weights of the diagrams are (`layer_weights_from_probs`): a value outside the
-/// real domain of its variable is impossible.
+/// real domain of its variable is impossible. Also returns the number of rounds that ran.
 fn sample_cavity_factors(
     constraints: &[CompiledConstraint],
     real_problem: &Problem,
@@ -457,7 +457,7 @@ fn sample_cavity_factors(
     domain_size: usize,
     rounds: impl Into<BpRounds>,
     evidence: &Evidence,
-) -> Vec<Vec<Vec<f64>>> {
+) -> (Vec<Vec<Vec<f64>>>, usize) {
     let priors: Vec<Vec<f64>> = (0..number_vars)
         .map(|var| {
             (0..domain_size)
@@ -473,7 +473,7 @@ fn sample_cavity_factors(
                 .collect()
         })
         .collect();
-    cavity_factors(
+    cavity_factors_with_rounds(
         constraints,
         &priors,
         &evidence.assignment,
@@ -623,6 +623,7 @@ fn mdd_loss_and_gradient(
 /// propagation that run (see the module documentation); `evidence` says which variables are pinned.
 /// With `skip_infeasible`, the mean is over the constraints that the pinned values leave
 /// satisfiable (see *Training on partial assignments*), instead of over all of them.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn sample_loss_and_gradient(
     constraints: &[CompiledConstraint],
@@ -634,8 +635,34 @@ fn sample_loss_and_gradient(
     evidence: &Evidence,
     skip_infeasible: bool,
 ) -> (f64, Vec<f32>) {
+    let (loss, grad, _) = sample_loss_gradient_and_rounds(
+        constraints,
+        real_problem,
+        probs_for_sample,
+        number_vars,
+        domain_size,
+        bp_rounds,
+        evidence,
+        skip_infeasible,
+    );
+    (loss, grad)
+}
+
+/// [`sample_loss_and_gradient`], and the number of rounds of belief propagation that ran, `None`
+/// without belief propagation.
+#[allow(clippy::too_many_arguments)]
+fn sample_loss_gradient_and_rounds(
+    constraints: &[CompiledConstraint],
+    real_problem: &Problem,
+    probs_for_sample: &[f32],
+    number_vars: usize,
+    domain_size: usize,
+    bp_rounds: impl Into<BpRounds>,
+    evidence: &Evidence,
+    skip_infeasible: bool,
+) -> (f64, Vec<f32>, Option<usize>) {
     let bp_rounds = bp_rounds.into();
-    let factors = (bp_rounds.max > 0).then(|| {
+    let factors_and_rounds = (bp_rounds.max > 0).then(|| {
         sample_cavity_factors(
             constraints,
             real_problem,
@@ -646,6 +673,10 @@ fn sample_loss_and_gradient(
             evidence,
         )
     });
+    let (factors, rounds_run) = match factors_and_rounds {
+        Some((factors, rounds)) => (Some(factors), Some(rounds)),
+        None => (None, None),
+    };
     let mut grad = vec![0.0f32; number_vars * domain_size];
     let mut loss_sum = 0.0;
     let mut counted = 0usize;
@@ -670,7 +701,7 @@ fn sample_loss_and_gradient(
     for g in &mut grad {
         *g /= denom as f32;
     }
-    (loss, grad)
+    (loss, grad, rounds_run)
 }
 
 /// Plain (unweighted) per-constraint mean of `-log(wmc+eps)`, per-sample then per-batch -- see
@@ -696,6 +727,8 @@ pub struct DecomposedMddLoss {
     /// Whether the mean of a sample is over the constraints its kept values leave satisfiable
     /// (see the module documentation), instead of over all of them.
     skip_infeasible: bool,
+    /// The rounds of belief propagation run per sample since the last [`Loss::take_bp_rounds`].
+    rounds_run: Mutex<RoundsStats>,
     /// Where the MDDs are compiled, so that constraints of the same shape share their structure.
     arena: MddArena,
     /// The problems compiled by the last `compile`; they keep alive the addresses `compiled` is
@@ -722,6 +755,7 @@ impl DecomposedMddLoss {
             bp_tolerance: 0.0,
             gumbel_scale: 1.0,
             skip_infeasible: false,
+            rounds_run: Mutex::new(RoundsStats::default()),
             arena: MddArena::new(),
             problems: Vec::new(),
             compiled: HashMap::new(),
@@ -905,43 +939,55 @@ impl DecomposedMddLoss {
             Vec::new()
         };
 
-        let results: Vec<(f64, Vec<f32>)> = crate::utils::worker_pool().install(|| {
-            compiled
-                .par_iter()
-                .zip(batch.problems.par_iter())
-                .enumerate()
-                .map(|(i, (constraints, real_problem))| {
-                    let start = i * number_vars * domain_size;
-                    let sample_probs = &probs_data[start..start + number_vars * domain_size];
-                    let no_evidence;
-                    let evidence = match evidence.get(i) {
-                        Some(evidence) => evidence,
-                        None => {
-                            no_evidence = Evidence {
-                                assignment: Vec::new(),
-                                decided: Vec::new(),
-                            };
-                            &no_evidence
-                        }
-                    };
-                    sample_loss_and_gradient(
-                        constraints,
-                        real_problem,
-                        sample_probs,
-                        number_vars,
-                        domain_size,
-                        BpRounds::until_converged(self.bp_rounds, self.bp_tolerance),
-                        evidence,
-                        self.skip_infeasible,
-                    )
-                })
-                .collect()
-        });
+        let results: Vec<(f64, Vec<f32>, Option<usize>)> =
+            crate::utils::worker_pool().install(|| {
+                compiled
+                    .par_iter()
+                    .zip(batch.problems.par_iter())
+                    .enumerate()
+                    .map(|(i, (constraints, real_problem))| {
+                        let start = i * number_vars * domain_size;
+                        let sample_probs = &probs_data[start..start + number_vars * domain_size];
+                        let no_evidence;
+                        let evidence = match evidence.get(i) {
+                            Some(evidence) => evidence,
+                            None => {
+                                no_evidence = Evidence {
+                                    assignment: Vec::new(),
+                                    decided: Vec::new(),
+                                };
+                                &no_evidence
+                            }
+                        };
+                        sample_loss_gradient_and_rounds(
+                            constraints,
+                            real_problem,
+                            sample_probs,
+                            number_vars,
+                            domain_size,
+                            BpRounds::until_converged(self.bp_rounds, self.bp_tolerance),
+                            evidence,
+                            self.skip_infeasible,
+                        )
+                    })
+                    .collect()
+            });
 
-        let loss_value: f64 = results.iter().map(|(loss, _)| loss).sum::<f64>() / batch_size as f64;
+        {
+            let mut rounds_run = self
+                .rounds_run
+                .lock()
+                .expect("the rounds statistics lock is poisoned");
+            for rounds in results.iter().filter_map(|(_, _, rounds)| *rounds) {
+                rounds_run.record(rounds);
+            }
+        }
+
+        let loss_value: f64 =
+            results.iter().map(|(loss, _, _)| loss).sum::<f64>() / batch_size as f64;
 
         let mut grad_data = vec![0.0f32; batch_size * number_vars * domain_size];
-        for (i, (_, grad)) in results.iter().enumerate() {
+        for (i, (_, grad, _)) in results.iter().enumerate() {
             let start = i * number_vars * domain_size;
             for (j, &g) in grad.iter().enumerate() {
                 grad_data[start + j] = g / batch_size as f32;
@@ -962,6 +1008,15 @@ impl DecomposedMddLoss {
 impl<B: Backend> Loss<B, ConsFormerBatch<B>> for DecomposedMddLoss {
     fn prepare(&mut self, problems: &[Arc<Problem>]) {
         self.compile(problems);
+    }
+
+    fn take_bp_rounds(&self) -> RoundsStats {
+        std::mem::take(
+            &mut *self
+                .rounds_run
+                .lock()
+                .expect("the rounds statistics lock is poisoned"),
+        )
     }
 
     fn loss(&self, logits: Tensor<B, 3>, batch: &ConsFormerBatch<B>) -> Tensor<B, 1> {
@@ -1580,6 +1635,29 @@ mod loss_tests {
         }
     }
 
+    /// The loss counts the rounds of belief propagation of every sample until they are taken.
+    #[test]
+    fn the_rounds_of_belief_propagation_are_counted_per_sample_until_taken() {
+        let device = NdArrayDevice::default();
+        let (batch, loss_fn) = two_sample_batch::<NdArray>(&device, 1.0);
+        let logits: Tensor<NdArray, 3> = Tensor::random(
+            [2, 3, 3],
+            burn::tensor::Distribution::Uniform(-1.0, 1.0),
+            &device,
+        );
+        let plain = <DecomposedMddLoss as Loss<NdArray, _>>::take_bp_rounds(&loss_fn);
+        assert_eq!(plain.count(), 0);
+
+        let loss_fn = loss_fn.with_bp_rounds(3).with_gumbel_scale(0.0);
+        loss_fn.loss(logits.clone(), &batch);
+        loss_fn.loss(logits, &batch);
+        let rounds = <DecomposedMddLoss as Loss<NdArray, _>>::take_bp_rounds(&loss_fn);
+        assert_eq!(rounds.count(), 4, "two samples, twice");
+        assert_eq!(rounds.mean(), Some(3.0));
+        let again = <DecomposedMddLoss as Loss<NdArray, _>>::take_bp_rounds(&loss_fn);
+        assert_eq!(again.count(), 0, "taking them resets the count");
+    }
+
     #[test]
     #[should_panic(expected = "Gumbel scale")]
     fn a_negative_gumbel_scale_is_refused() {
@@ -1858,7 +1936,8 @@ mod loss_tests {
         let (problem, loss_fn) = two_constraint_problem();
         let mdds = loss_fn.compiled_for(&problem);
         let free = Evidence::free(3);
-        let factors = sample_cavity_factors(mdds, &problem, &TWO_CONSTRAINT_PROBS, 3, 3, 2, &free);
+        let factors =
+            sample_cavity_factors(mdds, &problem, &TWO_CONSTRAINT_PROBS, 3, 3, 2, &free).0;
 
         let total = |probs: &[f32]| -> (f64, Vec<f32>) {
             let mut grad = vec![0.0f32; 9];
@@ -1935,7 +2014,7 @@ mod loss_tests {
             }
             let free = Evidence::free(3);
             let rounds = 1 + trial % 3;
-            let factors = sample_cavity_factors(mdds, &problem, &probs, 3, 3, rounds, &free);
+            let factors = sample_cavity_factors(mdds, &problem, &probs, 3, 3, rounds, &free).0;
             for (index, constraint) in mdds.iter().enumerate() {
                 let mut prior = layer_weights_from_probs(constraint, &problem, &probs, 3);
                 if trial % 3 == 0 {

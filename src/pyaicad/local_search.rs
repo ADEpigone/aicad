@@ -31,6 +31,15 @@ pub(crate) struct PySolution {
     /// `None` for a method without a search.
     #[pyo3(get)]
     iterations: Option<usize>,
+    /// Mean rounds of belief propagation per iteration, `None` for a search without it.
+    #[pyo3(get)]
+    bp_rounds_mean: Option<f64>,
+    /// Their standard deviation over the iterations, `None` for a search without it.
+    #[pyo3(get)]
+    bp_rounds_std: Option<f64>,
+    /// The most rounds of an iteration, `None` for a search without belief propagation.
+    #[pyo3(get)]
+    bp_rounds_max: Option<usize>,
     #[pyo3(get)]
     solution: Option<Vec<isize>>,
     #[pyo3(get)]
@@ -43,6 +52,9 @@ impl From<&Solution> for PySolution {
             runtime: s.runtime(),
             compilation_runtime: s.compilation_runtime(),
             iterations: s.iterations(),
+            bp_rounds_mean: s.bp_rounds().mean(),
+            bp_rounds_std: s.bp_rounds().std(),
+            bp_rounds_max: s.bp_rounds().max(),
             solution: s.assignment().map(<[isize]>::to_vec),
             status: s.status().into(),
         }

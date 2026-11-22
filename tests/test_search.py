@@ -85,6 +85,10 @@ def test_belief_propagation_search_solves(bp_tolerance):
     )
     results = ac.local_search(models, search, Limits(iterations=500), seed=0)
     assert len(results) == 3
+    for r in results:
+        assert 1 <= r.bp_rounds_mean <= 3 and r.bp_rounds_max <= 3
+        if bp_tolerance == 0.0:
+            assert r.bp_rounds_mean == 3 and r.bp_rounds_std == 0
     for m, r in zip(models, results):
         assert r.search == "bp" and r.iterations is not None and r.iterations >= 0
         if r.found:

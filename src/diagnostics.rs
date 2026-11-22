@@ -27,9 +27,11 @@
 //!   log, see [`crate::build_info`]. `version`, `commit` (`null` if unknown), `rustc`, `target`,
 //!   `profile`, `opt_level` and `features` (a list).
 //! - `train_epoch` (`learning::train`): `epoch`, the phase timings `t_batch`, `t_forward`,
-//!   `t_monitor`, `t_loss`, `t_backward`, `epoch_rt_s` and `epoch_loss`.
+//!   `t_monitor`, `t_loss`, `t_backward`, `epoch_rt_s` and `epoch_loss`. When the loss ran belief
+//!   propagation, also `bp_rounds_mean`, `bp_rounds_std`, `bp_rounds_min` and `bp_rounds_max`: the
+//!   rounds it ran per sample over the epoch (fewer than `bp_rounds` once a tolerance stops them).
 //! - `valid_epoch` (`learning::train`): `epoch`, `t_batch`, `t_forward`, `t_score`, `total_s`
-//!   and `score`.
+//!   and `score`, and the same `bp_rounds_*` fields over the validation set.
 //! - `mdd_compilation` (`learning::consformer::decomposed_mdd_loss`): `num_problems` (training and
 //!   validation together) and `elapsed_s`.
 //! - `loss_non_finite` (`learning::consformer::decomposed_mdd_loss`): written when the MDD loss of
