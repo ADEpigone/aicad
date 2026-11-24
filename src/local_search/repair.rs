@@ -1,4 +1,5 @@
-//! Repair of an assignment by belief propagation over the MDDs of the constraints.
+//! Repair of an assignment over MDDs: by belief propagation over the MDDs of the constraints, or
+//! along a path of a relaxed MDD of the whole problem.
 //!
 //! # Meaning
 //!
@@ -7,6 +8,12 @@
 //! variable, whatever produced it (a trained network, a uniform guess), with belief propagation
 //! over the decomposed MDDs of the problem, one per constraint, then takes the value of largest
 //! marginal or samples one.
+//!
+//! [`RelaxedMddRepair`] instead compiles one relaxed MDD of the whole problem, of bounded width,
+//! and samples a path of it, each edge weighted by the probability of its value: the freed
+//! variables take the values of the path, the others keep theirs (almost surely). A relaxed MDD
+//! holds every solution of its problem, so one without any path proves the problem
+//! unsatisfiable.
 //!
 //! # How it works
 //!
@@ -18,11 +25,25 @@
 //!
 //! [`BatchRepair`] holds those for the rows of a batch and repairs all of them in parallel.
 //!
+//! The relaxed MDDs are prepared the same way, once per problem and in parallel, by
+//! [`RelaxedMddRepair::prepare`], and held for a batch by [`BatchRelaxedRepair`]. A problem whose
+//! diagram has no path is reported by [`BatchRelaxedRepair::unsatisfiable`] before the search
+//! steps it, and one whose diagram yields a solution at once is given that solution at its first
+//! repair. Otherwise each repair weights the layers with the probabilities of their variable (1
+//! on the current value of a kept variable) and samples a path.
+//!
 //! # Design notes
 //!
 //! - **Sampling follows the rng it is given.** [`MddRepair::repair`] runs for many rows in
 //!   parallel, so each row gets its own generator, seeded beforehand; the process-wide one would
-//!   make the result depend on the thread schedule.
+//!   make the result depend on the thread schedule. [`RelaxedMddRepair::repair`] does not follow
+//!   it yet: the sampling of a path takes no generator, so its repairs are not reproducible.
+//! - **A probability is never zero on the relaxed MDD.** A confident network gives some values a
+//!   probability that rounds to 0 in `f32`; a node whose edges all lead to such values would
+//!   leave nothing to sample, so each weight of a freed variable is at least a small floor.
+//! - **Compiling a relaxed MDD is the costly part.** Its memory grows with the number of layers,
+//!   the width and the number of constraints, and a whole batch is compiled at once: wide
+//!   diagrams of large problems need small batches.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -34,28 +55,19 @@ use rayon::prelude::*;
 
 use crate::bp::{BpRounds, belief_propagation};
 use crate::mdd::arena::{MddCompilationConfig, compile_constraints};
-use crate::mdd::{CompiledConstraint, MddArena};
-use crate::modelling::{Problem, ValueIndex, VariableIndex};
-use crate::sampling::{DecodeMode, argmax, sample_categorical_with};
-// The relaxed-MDD repair serves only the neural relaxed-MDD search.
-#[cfg(feature = "learning")]
 use crate::mdd::heuristics::{
     CompilationHeuristic, MergeHeuristic, OrderingHeuristic, SelectHeuristic,
 };
-#[cfg(feature = "learning")]
-use crate::mdd::{Compiler, Mdd};
-#[cfg(feature = "learning")]
-use crate::modelling::ConstraintIndex;
-#[cfg(feature = "learning")]
-use crate::sampling::sample_solution;
+use crate::mdd::{CompiledConstraint, Compiler, Mdd, MddArena};
+use crate::modelling::{ConstraintIndex, Problem, ValueIndex, VariableIndex};
+use crate::sampling::{DecodeMode, argmax, sample_categorical_with, sample_solution};
 
 /// The decomposed MDDs of a problem, one compiled constraint per constraint. The `Arc` is shared
 /// by the copies of the same problem in a batch.
 pub type Compiled = Arc<Vec<CompiledConstraint>>;
 
 /// What [`RelaxedMddRepair`] compiles for a problem before the search.
-#[cfg(feature = "learning")]
-pub(crate) struct PreparedRelaxedMdd {
+pub struct PreparedRelaxedMdd {
     /// The relaxed MDD of the whole problem.
     mdd: Mdd,
     /// A solution of the problem read from a path of the diagram, when the first path found is
@@ -63,26 +75,25 @@ pub(crate) struct PreparedRelaxedMdd {
     exact_path: Option<Vec<isize>>,
 }
 
-/// Repairs assignements using pathing over a relaxed MDD with given `width` of the problem.
-#[cfg(feature = "learning")]
-pub(crate) struct RelaxedMddRepair {
+/// Repairs assignments along the paths of a relaxed MDD of the whole problem, of at most `width`
+/// nodes per layer, weighted by a probability per value and variable.
+pub struct RelaxedMddRepair {
     /// The largest number of nodes of a layer of the relaxed MDD.
     pub width: usize,
 }
 
-#[cfg(feature = "learning")]
 impl RelaxedMddRepair {
     /// The smallest weight a value of a free variable gets, so that every edge of the relaxed
     /// MDD can still be sampled.
     const MIN_WEIGHT: f64 = 1e-12;
 
-    /// `width` is the allowed maximum width for the relaxed MDD.
-    pub(crate) fn new(width: usize) -> Self {
+    /// A repair on relaxed MDDs of at most `width` nodes per layer.
+    pub fn new(width: usize) -> Self {
         Self { width }
     }
 
-    /// Compiles the relaxed MDD of given width for each problem in parallel.
-    pub(crate) fn prepare(&self, problems: &[Arc<Problem>]) -> Vec<Option<PreparedRelaxedMdd>> {
+    /// Compiles the relaxed MDD of each problem, in parallel, one entry per problem in order.
+    pub fn prepare(&self, problems: &[Arc<Problem>]) -> Vec<Option<PreparedRelaxedMdd>> {
         let progress = ProgressBar::new(problems.len() as u64);
         progress.set_style(
             ProgressStyle::with_template(
@@ -143,7 +154,7 @@ impl RelaxedMddRepair {
     ///
     /// Return `current` unchanged when nothing is free and when the problem is unsat.
     /// If there exists an exact path, it is returned.
-    pub(crate) fn repair(
+    pub fn repair(
         &self,
         problem: &Problem,
         prepared: Option<&PreparedRelaxedMdd>,
@@ -200,7 +211,7 @@ impl RelaxedMddRepair {
                     } else {
                         // A confident network gives some values a probability that rounds to
                         // exactly 0 in f32. On a node whose edges all lead to such values,
-                        // `sample_solution` would have nothing to sample, hence the floor.
+                        // `sample_solution` would have nothing to sample.
                         probability(v, raw_value as usize).max(RelaxedMddRepair::MIN_WEIGHT)
                     }
                 })
@@ -227,20 +238,18 @@ impl RelaxedMddRepair {
     }
 }
 
-/// An [`RelaxedMddRepair`] prepared for the rows of a batch: it owns the relaxed MDDs of every row
+/// A [`RelaxedMddRepair`] prepared for the rows of a batch: it owns the relaxed MDDs of every row
 /// and repairs all the rows at once.
-#[cfg(feature = "learning")]
-pub(crate) struct BatchRelaxedRepair {
+pub struct BatchRelaxedRepair {
     /// Repairs one row.
     repair: RelaxedMddRepair,
     /// What was compiled for each row, `None` once the row is solved.
     prepared: Vec<Option<PreparedRelaxedMdd>>,
 }
 
-#[cfg(feature = "learning")]
 impl BatchRelaxedRepair {
-    /// Compiles the relaxed of MDDs of `problems`, one row each.
-    pub(crate) fn new(repair: RelaxedMddRepair, problems: &[Arc<Problem>]) -> Self {
+    /// Compiles the relaxed MDDs of `problems`, one row each.
+    pub fn new(repair: RelaxedMddRepair, problems: &[Arc<Problem>]) -> Self {
         let prepared = repair.prepare(problems);
         Self { repair, prepared }
     }
@@ -248,10 +257,10 @@ impl BatchRelaxedRepair {
     /// Repairs, in parallel, the variables each row of `destroyed` frees, in `assignments`.
     /// `seeds` holds one seed per row for its sampling, and `probability(row, variable, value)`
     /// the probability of a raw value for a variable of a row.
-    pub(crate) fn repair_rows(
+    pub fn repair_rows(
         &self,
         problems: &[Arc<Problem>],
-        assignements: &mut [Vec<isize>],
+        assignments: &mut [Vec<isize>],
         destroyed: &[Vec<usize>],
         seeds: &[u64],
         probability: impl Fn(usize, usize, usize) -> f64 + Sync,
@@ -264,7 +273,7 @@ impl BatchRelaxedRepair {
                     self.repair.repair(
                         &problems[row],
                         self.prepared[row].as_ref(),
-                        &assignements[row],
+                        &assignments[row],
                         &destroyed[row],
                         &mut rng,
                         |variable, value| probability(row, variable, value),
@@ -273,21 +282,21 @@ impl BatchRelaxedRepair {
                 .collect()
         });
 
-        for (row, values) in assignements.iter_mut().zip(next) {
+        for (row, values) in assignments.iter_mut().zip(next) {
             *row = values;
         }
     }
     /// Whether the relaxed MDD of `row` has no path from the root to the sink. A relaxed MDD holds
     /// every solution of its problem, so this proves the problem has none. `false` once the row
     /// is solved, as nothing is kept for it then.
-    pub(crate) fn unsatisfiable(&self, row: usize) -> bool {
+    pub fn unsatisfiable(&self, row: usize) -> bool {
         self.prepared[row]
             .as_ref()
             .is_some_and(|prepared| prepared.mdd.is_unsat())
     }
 
     /// Frees what was compiled for the rows flagged in `solved`.
-    pub(crate) fn solved(&mut self, solved: &[bool]) {
+    pub fn solved(&mut self, solved: &[bool]) {
         for (prepared, &is_solved) in self.prepared.iter_mut().zip(solved) {
             if is_solved {
                 *prepared = None;
@@ -296,7 +305,7 @@ impl BatchRelaxedRepair {
     }
 
     /// Drops the rows not flagged in `keep`.
-    pub(crate) fn retain(&mut self, keep: &[bool]) {
+    pub fn retain(&mut self, keep: &[bool]) {
         self.prepared = super::filtered(std::mem::take(&mut self.prepared), keep);
     }
 }
@@ -638,7 +647,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "learning")]
     fn the_relaxed_repair_reports_the_rows_whose_relaxed_mdd_has_no_path() {
         // Four variables pairwise different over three values have no solution; the width is
         // large enough for the diagram to be exact.
@@ -649,7 +657,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "learning")]
     fn a_solved_row_is_not_reported_unsatisfiable() {
         let problems = vec![clique_problem(4, 3)];
         let mut batch = BatchRelaxedRepair::new(RelaxedMddRepair::new(100), &problems);
@@ -658,7 +665,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "learning")]
     fn the_relaxed_repair_samples_even_when_the_network_gives_every_value_a_zero_probability() {
         let problem = clique_problem(3, 3);
         let repair = RelaxedMddRepair::new(100);
