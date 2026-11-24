@@ -60,7 +60,7 @@ use crate::mdd::heuristics::{
 };
 use crate::mdd::{CompiledConstraint, Compiler, Mdd, MddArena};
 use crate::modelling::{ConstraintIndex, Problem, ValueIndex, VariableIndex};
-use crate::sampling::{DecodeMode, argmax, sample_categorical_with, sample_solution};
+use crate::sampling::{DecodeMode, argmax, sample_categorical_with, sample_solution_with};
 
 /// The decomposed MDDs of a problem, one compiled constraint per constraint. The `Arc` is shared
 /// by the copies of the same problem in a batch.
@@ -149,8 +149,7 @@ impl RelaxedMddRepair {
     /// the search may change: the other values are kept. `probability(variable, value)` is the
     /// probability of a raw value for a variable, over `0..domain_size`.
     ///
-    /// `rng` is meant to make the sampling reproducible, as in the BP search, but the sampling of
-    /// the MDD does not take one yet: this repair is not reproducible for now.
+    /// `rng` is meant to make the sampling reproducible, as in the BP search.
     ///
     /// Return `current` unchanged when nothing is free and when the problem is unsat.
     /// If there exists an exact path, it is returned.
@@ -160,7 +159,7 @@ impl RelaxedMddRepair {
         prepared: Option<&PreparedRelaxedMdd>,
         current: &[isize],
         free: &[usize],
-        _rng: &mut StdRng,
+        rng: &mut StdRng,
         probability: impl Fn(usize, usize) -> f64,
     ) -> Vec<isize> {
         if free.is_empty() {
@@ -227,7 +226,7 @@ impl RelaxedMddRepair {
             .collect();
 
         // And use it to sample a path, which gives a new assignment to return.
-        let path = sample_solution(mdd, &weights);
+        let path = sample_solution_with(mdd, &weights, rng);
         let (values, variables) = mdd.solution_from_path(&path);
 
         for (&value, variable) in values.iter().zip(variables) {
